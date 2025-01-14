@@ -13,31 +13,41 @@ from common.utils.random import random_string
 logger = get_logger(__file__)
 
 
-@shared_task(verbose_name=_('Send email'))
-def send_async(sender):
-    sender.gen_and_send()
+@shared_task(
+    verbose_name=_('Send SMS code'),
+    description=_(
+        """When resetting a password, forgetting a password, or verifying MFA, this task needs to 
+        be executed to send SMS messages"""
+    )
+)
+def send_sms_async(target, code, user_info):
+    SMS().send_verify_code(target, code, user_info=user_info)
 
 
 class SendAndVerifyCodeUtil(object):
     KEY_TMPL = 'auth-verify-code-{}'
 
-    def __init__(self, target, code=None, key=None, backend='email', timeout=None, **kwargs):
+    def __init__(
+            self, target, code=None, key=None, backend='email',
+            user_info=None, timeout=None, **kwargs
+    ):
         self.code = code
         self.target = target
+        self.user_info = user_info
         self.backend = backend
         self.key = key or self.KEY_TMPL.format(target)
         self.timeout = settings.VERIFY_CODE_TTL if timeout is None else timeout
         self.other_args = kwargs
 
     def gen_and_send_async(self):
-        return send_async.delay(self)
-
-    def gen_and_send(self):
         ttl = self.__ttl()
         if ttl > 0:
-            logger.error('Send sms too frequently, delay {}'.format(ttl))
+            logger.warning('Send sms too frequently, delay {}'.format(ttl))
             raise CodeSendTooFrequently(ttl)
 
+        return self.gen_and_send()
+
+    def gen_and_send(self):
         try:
             if not self.code:
                 self.code = self.__generate()
@@ -67,18 +77,20 @@ class SendAndVerifyCodeUtil(object):
         return cache.get(self.key)
 
     def __generate(self):
-        code = random_string(4, lower=False, upper=False)
+        code = random_string(settings.SMS_CODE_LENGTH, lower=False, upper=False)
         self.code = code
         return code
 
     def __send_with_sms(self):
-        sms = SMS()
-        sms.send_verify_code(self.target, self.code)
+        send_sms_async.apply_async(args=(self.target, self.code, self.user_info), priority=100)
 
     def __send_with_email(self):
-        subject = self.other_args.get('subject')
-        message = self.other_args.get('message')
-        send_mail_async(subject, message, [self.target], html_message=message)
+        subject = self.other_args.get('subject', '')
+        message = self.other_args.get('message', '')
+        send_mail_async.apply_async(
+            args=(subject, message, [self.target]),
+            kwargs={'html_message': message}, priority=100
+        )
 
     def __send(self, code):
         """

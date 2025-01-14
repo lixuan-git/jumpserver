@@ -39,14 +39,14 @@ class TerminalSmallSerializer(serializers.ModelSerializer):
 
 
 class TerminalSerializer(BulkModelSerializer):
-    session_online = serializers.ReadOnlyField(source='get_online_session_count')
-    is_alive = serializers.BooleanField(read_only=True)
-    is_active = serializers.BooleanField(read_only=True, label='Is active')
+    session_online = serializers.ReadOnlyField(source='get_online_session_count', label=_('Online sessions'))
+    is_alive = serializers.BooleanField(read_only=True, label=_('Is alive'))
+    is_active = serializers.BooleanField(read_only=True, label=_('Active'))
     load = LabeledChoiceField(
         read_only=True, choices=const.ComponentLoad.choices,
         label=_('Load status')
     )
-    stat = StatSerializer(read_only=True, source='last_stat')
+    stat = StatSerializer(read_only=True, source='last_stat', label=_('Stat'))
 
     class Meta:
         model = Terminal
@@ -147,3 +147,8 @@ class ConnectMethodSerializer(serializers.Serializer):
     type = serializers.CharField(max_length=128)
     endpoint_protocol = serializers.CharField(max_length=128)
     component = serializers.CharField(max_length=128)
+
+
+class EncryptedConfigSerializer(serializers.Serializer):
+    secret_encrypt_key = serializers.CharField(max_length=128)
+    encrypted_value = serializers.CharField(max_length=128)

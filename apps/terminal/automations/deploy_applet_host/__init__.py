@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 import shutil
 
 import yaml
@@ -8,7 +9,7 @@ from django.utils import timezone
 
 from common.db.utils import safe_db_connection
 from common.utils import get_logger, random_string
-from ops.ansible import PlaybookRunner, JMSInventory
+from ops.ansible import SuperPlaybookRunner, JMSInventory
 from terminal.models import Applet, AppletHostDeployment
 
 logger = get_logger(__name__)
@@ -16,10 +17,12 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class DeployAppletHostManager:
-    def __init__(self, deployment: AppletHostDeployment, applet: Applet = None):
+    def __init__(self, deployment: AppletHostDeployment, applet: Applet = None,
+                 install_applets: bool = True, **kwargs):
         self.deployment = deployment
         self.applet = applet
         self.run_dir = self.get_run_dir()
+        self.install_applets = bool(install_applets)
 
     @staticmethod
     def get_run_dir():
@@ -33,6 +36,9 @@ class DeployAppletHostManager:
     def install_applet(self, **kwargs):
         self._run(self._run_install_applet, **kwargs)
 
+    def uninstall_applet(self, **kwargs):
+        self._run(self._run_uninstall_applet, **kwargs)
+
     def _run_initial_deploy(self, **kwargs):
         playbook = self.generate_initial_playbook
         return self._run_playbook(playbook, **kwargs)
@@ -42,6 +48,13 @@ class DeployAppletHostManager:
             generate_playbook = self.generate_install_applet_playbook
         else:
             generate_playbook = self.generate_install_all_playbook
+        return self._run_playbook(generate_playbook, **kwargs)
+
+    def _run_uninstall_applet(self, **kwargs):
+        if self.applet:
+            generate_playbook = self.generate_uninstall_applet_playbook
+        else:
+            raise ValueError("applet is required for uninstall_applet")
         return self._run_playbook(generate_playbook, **kwargs)
 
     def generate_initial_playbook(self):
@@ -59,7 +72,8 @@ class DeployAppletHostManager:
         download_host = download_host.rstrip("/")
 
         def handler(plays):
-            applet_host_name = self.deployment.host.name
+            # 替换所有的特殊字符为下划线 _ , 防止因主机名称造成任务执行失败
+            applet_host_name = re.sub(r'\W', '_', self.deployment.host.name, flags=re.UNICODE)
             hostname = '{}-{}'.format(applet_host_name, random_string(7))
             for play in plays:
                 play["vars"].update(options)
@@ -68,6 +82,7 @@ class DeployAppletHostManager:
                 play["vars"]["BOOTSTRAP_TOKEN"] = bootstrap_token
                 play["vars"]["HOST_ID"] = host_id
                 play["vars"]["HOST_NAME"] = hostname
+                play["vars"]["INSTALL_APPLETS"] = self.install_applets
             return plays
 
         return self._generate_playbook("playbook.yml", handler)
@@ -86,6 +101,16 @@ class DeployAppletHostManager:
             return plays
 
         return self._generate_playbook("install_applet.yml", handler)
+
+    def generate_uninstall_applet_playbook(self):
+        applet_name = self.applet.name
+
+        def handler(plays):
+            for play in plays:
+                play["vars"]["applet_name"] = applet_name
+            return plays
+
+        return self._generate_playbook("uninstall_applet.yml", handler)
 
     def generate_inventory(self):
         inventory = JMSInventory(
@@ -112,7 +137,7 @@ class DeployAppletHostManager:
     def _run_playbook(self, generate_playbook: callable, **kwargs):
         inventory = self.generate_inventory()
         playbook = generate_playbook()
-        runner = PlaybookRunner(
+        runner = SuperPlaybookRunner(
             inventory=inventory, playbook=playbook, project_dir=self.run_dir
         )
         return runner.run(**kwargs)
@@ -120,7 +145,7 @@ class DeployAppletHostManager:
     def delete_runtime_dir(self):
         if settings.DEBUG_DEV:
             return
-        shutil.rmtree(self.run_dir)
+        shutil.rmtree(self.run_dir, ignore_errors=True)
 
     def _run(self, cb_func: callable, **kwargs):
         try:
