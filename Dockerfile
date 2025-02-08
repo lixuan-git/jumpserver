@@ -1,85 +1,68 @@
-FROM python:3.11-slim-bullseye as stage-build
-ARG TARGETARCH
+FROM jumpserver/core-base:20241210_070105 AS stage-build
 
 ARG VERSION
-ENV VERSION=$VERSION
 
 WORKDIR /opt/jumpserver
+
 ADD . .
-RUN cd utils && bash -ixeu build.sh
+
+RUN echo > /opt/jumpserver/config.yml \
+    && \
+    if [ -n "${VERSION}" ]; then \
+        sed -i "s@VERSION = .*@VERSION = '${VERSION}'@g" apps/jumpserver/const.py; \
+    fi
+
+RUN set -ex \
+    && export SECRET_KEY=$(head -c100 < /dev/urandom | base64 | tr -dc A-Za-z0-9 | head -c 48) \
+    && . /opt/py3/bin/activate \
+    && cd apps \
+    && python manage.py compilemessages
+
 
 FROM python:3.11-slim-bullseye
-ARG TARGETARCH
-
-ARG BUILD_DEPENDENCIES="              \
-        g++                           \
-        make                          \
-        pkg-config"
+ENV LANG=en_US.UTF-8 \
+    PATH=/opt/py3/bin:$PATH
 
 ARG DEPENDENCIES="                    \
-        freetds-dev                   \
-        libpq-dev                     \
-        libffi-dev                    \
-        libjpeg-dev                   \
-        libkrb5-dev                   \
         libldap2-dev                  \
-        libsasl2-dev                  \
-        libssl-dev                    \
-        libxml2-dev                   \
-        libxmlsec1-dev                \
-        libxmlsec1-openssl            \
-        freerdp2-dev                  \
-        libaio-dev"
+        libx11-dev"
 
 ARG TOOLS="                           \
+        cron                          \
         ca-certificates               \
-        curl                          \
         default-libmysqlclient-dev    \
-        default-mysql-client          \
-        locales                       \
-        nmap                          \
         openssh-client                \
-        patch                         \
         sshpass                       \
-        telnet                        \
-        vim                           \
-        wget"
+        bubblewrap"
 
-ARG APT_MIRROR=http://mirrors.ustc.edu.cn
+ARG APT_MIRROR=http://deb.debian.org
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=core \
-    sed -i "s@http://.*.debian.org@${APT_MIRROR}@g" /etc/apt/sources.list \
-    && rm -f /etc/apt/apt.conf.d/docker-clean \
+RUN set -ex \
+    && sed -i "s@http://.*.debian.org@${APT_MIRROR}@g" /etc/apt/sources.list \
     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-    && apt-get update \
-    && apt-get -y install --no-install-recommends ${BUILD_DEPENDENCIES} \
+    && apt-get update > /dev/null \
     && apt-get -y install --no-install-recommends ${DEPENDENCIES} \
     && apt-get -y install --no-install-recommends ${TOOLS} \
     && mkdir -p /root/.ssh/ \
     && echo "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null\n\tCiphers +aes128-cbc\n\tKexAlgorithms +diffie-hellman-group1-sha1\n\tHostKeyAlgorithms +ssh-rsa" > /root/.ssh/config \
-    && echo "set mouse-=a" > ~/.vimrc \
     && echo "no" | dpkg-reconfigure dash \
-    && echo "zh_CN.UTF-8" | dpkg-reconfigure locales \
-    && sed -i "s@# export @export @g" ~/.bashrc \
-    && sed -i "s@# alias @alias @g" ~/.bashrc \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean all \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo "0 3 * * * root find /tmp -type f -mtime +1 -size +1M -exec rm -f {} \; && date > /tmp/clean.log" > /etc/cron.d/cleanup_tmp \
+    && chmod 0644 /etc/cron.d/cleanup_tmp
 
-COPY --from=stage-build /opt/jumpserver/release/jumpserver /opt/jumpserver
+COPY --from=stage-build /opt /opt
+COPY --from=stage-build /usr/local/bin /usr/local/bin
+COPY --from=stage-build /opt/jumpserver/apps/libs/ansible/ansible.cfg /etc/ansible/
+
 WORKDIR /opt/jumpserver
 
-ARG PIP_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
-RUN --mount=type=cache,target=/root/.cache \
-    set -ex \
-    && echo > /opt/jumpserver/config.yml \
-    && pip install poetry -i ${PIP_MIRROR} \
-    && poetry config virtualenvs.create false \
-    && poetry install --only=main
-
 VOLUME /opt/jumpserver/data
-VOLUME /opt/jumpserver/logs
 
-ENV LANG=zh_CN.UTF-8
+ENTRYPOINT ["./entrypoint.sh"]
 
 EXPOSE 8080
 
-ENTRYPOINT ["./entrypoint.sh"]
+STOPSIGNAL SIGQUIT
+
+CMD ["start", "all"]

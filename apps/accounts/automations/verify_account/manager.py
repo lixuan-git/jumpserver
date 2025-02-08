@@ -42,7 +42,6 @@ class VerifyAccountManager(AccountBasePlaybookManager):
         if host.get('error'):
             return host
 
-        # host['ssh_args'] = '-o ControlMaster=no -o ControlPersist=no'
         accounts = asset.accounts.all()
         accounts = self.get_accounts(account, accounts)
         inventory_hosts = []
@@ -52,6 +51,9 @@ class VerifyAccountManager(AccountBasePlaybookManager):
             h['name'] += '(' + account.username + ')'
             self.host_account_mapper[h['name']] = account
             secret = account.secret
+            if secret is None:
+                print(f'account {account.name} secret is None')
+                continue
 
             private_key_path = None
             if account.secret_type == SecretType.SSH_KEY:
@@ -63,8 +65,9 @@ class VerifyAccountManager(AccountBasePlaybookManager):
                 'name': account.name,
                 'username': account.username,
                 'secret_type': account.secret_type,
-                'secret': secret,
-                'private_key_path': private_key_path
+                'secret': account.escape_jinja2_syntax(secret),
+                'private_key_path': private_key_path,
+                'become': account.get_ansible_become_auth(),
             }
             if account.platform.type == 'oracle':
                 h['account']['mode'] = 'sysdba' if account.privileged else None
@@ -73,8 +76,14 @@ class VerifyAccountManager(AccountBasePlaybookManager):
 
     def on_host_success(self, host, result):
         account = self.host_account_mapper.get(host)
-        account.set_connectivity(Connectivity.OK)
+        try:
+            account.set_connectivity(Connectivity.OK)
+        except Exception as e:
+            print(f'\033[31m Update account {account.name} connectivity failed: {e} \033[0m\n')
 
     def on_host_error(self, host, error, result):
         account = self.host_account_mapper.get(host)
-        account.set_connectivity(Connectivity.ERR)
+        try:
+            account.set_connectivity(Connectivity.ERR)
+        except Exception as e:
+            print(f'\033[31m Update account {account.name} connectivity failed: {e} \033[0m\n')

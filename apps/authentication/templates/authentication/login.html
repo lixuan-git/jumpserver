@@ -69,16 +69,21 @@
         }
 
         .login-content {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
             height: 500px;
             width: 1000px;
-            margin-right: auto;
-            margin-left: auto;
-            margin-top: calc((100vh - 470px) / 3);
         }
 
+
         body {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
             background-color: #f3f3f3;
-            height: calc(100vh - (100vh - 470px) / 3);
+            {#height: calc(100vh - (100vh - 470px) / 3);#}
         }
 
         .captcha {
@@ -99,6 +104,27 @@
             border-right: 1px solid #EFF0F1;
         }
 
+        .left-form-box .form-panel {
+            position: relative;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .left-form-box .form-panel {
+            position: relative;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .left-form-box .form-panel .form-mobile {
+            padding: 15px 60px;
+            text-align: left
+        }
+
+        .left-form-box .form-panel .form-mobile h2 {
+            display: inline
+        }
+
         .red-fonts {
             color: red;
         }
@@ -112,11 +138,11 @@
         }
 
         .jms-title {
-            padding: 22px 10px 10px;
+            {#padding: 22px 10px 10px;#}
         }
 
         .more-login-items {
-            margin-top: 10px;
+            margin-top: 15px;
         }
 
         .more-login-item {
@@ -153,6 +179,9 @@
         }
 
         .jms-title {
+            display: flex;
+            justify-content: center;
+            align-items: center;
             font-size: 21px;
             font-weight: 400;
             color: #151515;
@@ -215,13 +244,7 @@
         }
 
         .auto-login input[type=checkbox] {
-            position: relative;
-            display: inline-block;
-            margin-top: 0;
-            vertical-align: middle;
-            width: 13px;
-            height: 13px;
-            cursor: pointer;
+
         }
 
         .error-info {
@@ -258,7 +281,22 @@
 
             .mobile-logo {
                 display: block;
-                padding: 20px 30px 0 30px;
+                padding: 0 45px;
+                text-align: left;
+            }
+
+            .right-image {
+                height: revert;
+                width: revert;
+            }
+
+            .left-form-box .form-panel {
+                transform: translateY(-65%);
+            }
+
+            .left-form-box .form-panel .form-mobile h2 {
+                padding: 0;
+                margin: 0;
             }
         }
     </style>
@@ -279,20 +317,20 @@
         </a>
     </div>
     <div class="left-form-box {% if not form.challenge and not form.captcha %} no-captcha-challenge {% endif %}">
-        <div class="mobile-logo">
-            <a href="{% if not XPACK_ENABLED %}https://github.com/jumpserver/jumpserver.git{% endif %}">
-                <img src="{% static 'img/logo_text_green.png' %}" class="right-image" alt="screen-image"/>
-            </a>
+        <div class="mobile-logo" style="padding-bottom: 45px; box-sizing: border-box">
+	        <div class="jms-title">
+                <img style="width: 60px; height: 60px" src="{{ INTERFACE.logo_logout }}" alt="Logo"/>
+                <span style="padding-left: 10px">{{ INTERFACE.login_title }}</span>
+            </div>
         </div>
-        <div style="position: relative;top: 50%;transform: translateY(-50%);">
-            <div style='padding: 15px 60px; text-align: left'>
-                <h2 style='font-weight: 400;display: inline'>
+        <div class="form-panel">
+            <div class="form-mobile">
+                <h2 style='font-weight: 400;'>
                     {% trans 'Login' %}
                 </h2>
                 <ul class=" nav navbar-top-links navbar-right">
                     <li class="dropdown">
-                        <a class="dropdown-toggle login-page-language" data-toggle="dropdown" href="#"
-                           target="_blank">
+                        <a class="dropdown-toggle login-page-language" data-toggle="dropdown" href="#" target="_blank">
                             <i class="fa fa-globe fa-lg" style="margin-right: 2px"></i>
                             <span>{{ current_lang.title }}<b class="caret"></b></span>
                         </a>
@@ -372,8 +410,8 @@
                             <div class="more-login-items">
                             {% for method in auth_methods %}
                                 <a href="{{ method.url }}" class="more-login-item">
-                                    <i class="fa">
-                                        <img src="{{ method.logo }}" height="15" width="15"></i> {{ method.name }}
+                                    <i class="fa"><img src="{{ method.logo }}" height="15" width="15"/> </i>
+                                    {{ method.name }}
                                 </a>
                             {% endfor %}
                             </div>
@@ -401,6 +439,15 @@
         $('#password-hidden').val(passwordEncrypted); //返回给密码输入input
         $('#login-form').submit(); //post提交
     }
+    function checkHealth() {
+        let url =  "{% url 'health' %}";
+        requestApi({
+            url: url,
+            method: "GET",
+            flash_message: false,
+        })
+    }
+    setInterval(checkHealth, 30 * 1000);
 </script>
 </html>
 

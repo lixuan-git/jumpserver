@@ -1,9 +1,9 @@
+from django.conf import settings
 from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 from acls.models.base import BaseACL
 from common.serializers.fields import JSONManyToManyField, LabeledChoiceField
-from jumpserver.utils import has_valid_xpack_license
 from orgs.models import Organization
 from ..const import ActionChoices
 
@@ -62,14 +62,21 @@ class ActionAclSerializer(serializers.Serializer):
         self.set_action_choices()
 
     class Meta:
-        action_choices_exclude = [ActionChoices.warning]
+        action_choices_exclude = [ActionChoices.warning, ActionChoices.notify_and_warn]
 
     def set_action_choices(self):
         field_action = self.fields.get("action")
         if not field_action:
             return
-        if not has_valid_xpack_license():
+        if not settings.XPACK_LICENSE_IS_VALID:
             field_action._choices.pop(ActionChoices.review, None)
+        if not (
+            settings.XPACK_LICENSE_IS_VALID and
+            settings.XPACK_LICENSE_EDITION_ULTIMATE and
+            settings.FACE_RECOGNITION_ENABLED
+        ):
+            field_action._choices.pop(ActionChoices.face_verify, None)
+            field_action._choices.pop(ActionChoices.face_online, None)
         for choice in self.Meta.action_choices_exclude:
             field_action._choices.pop(choice, None)
 

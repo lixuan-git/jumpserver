@@ -1,15 +1,8 @@
 import os
-import platform
-
-from redis.sentinel import SentinelManagedSSLConnection
-
-if platform.system() == 'Darwin' and platform.machine() == 'arm64':
-    import pymysql
-
-    # pymysql.version_info = (1, 4, 2, "final", 0)
-    pymysql.install_as_MySQLdb()
+import re
 
 from django.urls import reverse_lazy
+from redis.sentinel import SentinelManagedSSLConnection
 
 from .. import const
 from ..const import CONFIG
@@ -37,7 +30,8 @@ BASE_DIR = const.BASE_DIR
 PROJECT_DIR = const.PROJECT_DIR
 APPS_DIR = os.path.join(PROJECT_DIR, 'apps')
 DATA_DIR = os.path.join(PROJECT_DIR, 'data')
-ANSIBLE_DIR = os.path.join(DATA_DIR, 'ansible')
+SHARE_DIR = os.path.join(DATA_DIR, 'share')
+ANSIBLE_DIR = os.path.join(SHARE_DIR, 'ansible')
 CERTS_DIR = os.path.join(DATA_DIR, 'certs')
 
 # Quick-start development settings - unsuitable for production
@@ -72,15 +66,15 @@ for name in ['SERVER_NAME', 'CORE_HOST']:
     env = os.environ.get(name)
     if not env:
         continue
-    DOMAINS += ',{}'.format(env)
+    DOMAINS += ',{}'.format(env.replace(" ", ","))
 if CONFIG.SITE_URL:
     DOMAINS += ',{}'.format(CONFIG.SITE_URL)
 
 ALLOWED_DOMAINS = DOMAINS.split(',') if DOMAINS else ['localhost:8080']
 ALLOWED_DOMAINS = [host.strip() for host in ALLOWED_DOMAINS]
 ALLOWED_DOMAINS = [host.replace('http://', '').replace('https://', '') for host in ALLOWED_DOMAINS if host]
-ALLOWED_DOMAINS = [host.replace(':80', '').replace(':443', '') for host in ALLOWED_DOMAINS]
 ALLOWED_DOMAINS = [host.split('/')[0] for host in ALLOWED_DOMAINS if host]
+ALLOWED_DOMAINS = [re.sub(':80$|:443$', '', host) for host in ALLOWED_DOMAINS]
 
 DEBUG_HOSTS = ('127.0.0.1', 'localhost', 'core')
 DEBUG_PORT = ['8080', '80', ]
@@ -89,9 +83,9 @@ if DEBUG:
 DEBUG_HOST_PORTS = ['{}:{}'.format(host, port) for host in DEBUG_HOSTS for port in DEBUG_PORT]
 ALLOWED_DOMAINS.extend(DEBUG_HOST_PORTS)
 
-print("ALLOWED_HOSTS: ", )
-for host in ALLOWED_DOMAINS:
-    print('  - ' + host.lstrip('.'))
+# print("ALLOWED_HOSTS: ", )
+# for host in ALLOWED_DOMAINS:
+#     print('  - ' + host.lstrip('.'))
 
 ALLOWED_HOSTS = ['*']
 
@@ -108,6 +102,7 @@ for host_port in ALLOWED_DOMAINS:
             continue
         CSRF_TRUSTED_ORIGINS.append('{}://*.{}'.format(schema, origin))
 
+CORS_ALLOWED_ORIGINS = [o.replace('*.', '') for o in CSRF_TRUSTED_ORIGINS]
 CSRF_FAILURE_VIEW = 'jumpserver.views.other.csrf_failure'
 # print("CSRF_TRUSTED_ORIGINS: ")
 # for origin in CSRF_TRUSTED_ORIGINS:
@@ -128,19 +123,19 @@ INSTALLED_APPS = [
     'terminal.apps.TerminalConfig',
     'audits.apps.AuditsConfig',
     'authentication.apps.AuthenticationConfig',  # authentication
-    'applications.apps.ApplicationsConfig',
     'tickets.apps.TicketsConfig',
     'acls.apps.AclsConfig',
     'notifications.apps.NotificationsConfig',
     'rbac.apps.RBACConfig',
+    'labels.apps.LabelsConfig',
     'rest_framework',
-    'rest_framework_swagger',
     'drf_yasg',
     'django_cas_ng',
     'channels',
     'django_filters',
     'bootstrap3',
     'captcha',
+    'corsheaders',
     'private_storage',
     'django_celery_beat',
     'django.contrib.auth',
@@ -159,6 +154,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -229,20 +225,20 @@ CSRF_COOKIE_NAME = '{}csrftoken'.format(SESSION_COOKIE_NAME_PREFIX)
 SESSION_COOKIE_NAME = '{}sessionid'.format(SESSION_COOKIE_NAME_PREFIX)
 
 SESSION_COOKIE_AGE = CONFIG.SESSION_COOKIE_AGE
-SESSION_EXPIRE_AT_BROWSER_CLOSE = True
-# 自定义的配置，SESSION_EXPIRE_AT_BROWSER_CLOSE 始终为 True, 下面这个来控制是否强制关闭后过期 cookie
-SESSION_EXPIRE_AT_BROWSER_CLOSE_FORCE = CONFIG.SESSION_EXPIRE_AT_BROWSER_CLOSE_FORCE
 SESSION_SAVE_EVERY_REQUEST = CONFIG.SESSION_SAVE_EVERY_REQUEST
-SESSION_ENGINE = "django.contrib.sessions.backends.{}".format(CONFIG.SESSION_ENGINE)
+SESSION_EXPIRE_AT_BROWSER_CLOSE = CONFIG.SESSION_EXPIRE_AT_BROWSER_CLOSE
+VIEW_ASSET_ONLINE_SESSION_INFO = CONFIG.VIEW_ASSET_ONLINE_SESSION_INFO
+SESSION_ENGINE = "common.sessions.{}".format(CONFIG.SESSION_ENGINE)
 
 MESSAGE_STORAGE = 'django.contrib.messages.storage.cookie.CookieStorage'
 # Database
 # https://docs.djangoproject.com/en/1.10/ref/settings/#databases
 
 DB_OPTIONS = {}
+DB_ENGINE = CONFIG.DB_ENGINE.lower()
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.{}'.format(CONFIG.DB_ENGINE.lower()),
+        'ENGINE': 'django.db.backends.{}'.format(DB_ENGINE),
         'NAME': CONFIG.DB_NAME,
         'HOST': CONFIG.DB_HOST,
         'PORT': CONFIG.DB_PORT,
@@ -254,7 +250,7 @@ DATABASES = {
 }
 
 DB_USE_SSL = CONFIG.DB_USE_SSL
-if CONFIG.DB_ENGINE.lower() == 'mysql':
+if DB_ENGINE == 'mysql':
     DB_OPTIONS['init_command'] = "SET sql_mode='STRICT_TRANS_TABLES'"
     if DB_USE_SSL:
         DB_CA_PATH = exist_or_default(os.path.join(CERTS_DIR, 'db_ca.pem'), None)
@@ -293,7 +289,7 @@ USE_TZ = True
 
 # I18N translation
 LOCALE_PATHS = [
-    os.path.join(BASE_DIR, 'locale'),
+    os.path.join(BASE_DIR, 'i18n', 'core'),
 ]
 
 # Static files (CSS, JavaScript, Images)
@@ -307,12 +303,16 @@ STATICFILES_DIRS = (
     os.path.join(BASE_DIR, "static"),
 )
 
-# Media files (File, ImageField) will be save these
+# Media files (File, ImageField) will be safe these
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(PROJECT_DIR, 'data', 'media').replace('\\', '/') + '/'
 
 PRIVATE_STORAGE_ROOT = MEDIA_ROOT
 PRIVATE_STORAGE_AUTH_FUNCTION = 'jumpserver.rewriting.storage.permissions.allow_access'
+PRIVATE_STORAGE_INTERNAL_URL = '/private-media/'
+PRIVATE_STORAGE_SERVER = 'jumpserver.rewriting.storage.servers.StaticFileServer'
+
+FILE_UPLOAD_TEMP_DIR = CONFIG.FILE_UPLOAD_TEMP_DIR
 
 # Use django-bootstrap-form to format template, input max width arg
 # BOOTSTRAP_COLUMN_COUNT = 11
@@ -321,6 +321,7 @@ PRIVATE_STORAGE_AUTH_FUNCTION = 'jumpserver.rewriting.storage.permissions.allow_
 FIXTURE_DIRS = [os.path.join(BASE_DIR, 'fixtures'), ]
 
 # Email config
+EMAIL_PROTOCOL = CONFIG.EMAIL_PROTOCOL
 EMAIL_HOST = CONFIG.EMAIL_HOST
 EMAIL_PORT = CONFIG.EMAIL_PORT
 EMAIL_HOST_USER = CONFIG.EMAIL_HOST_USER
@@ -399,7 +400,7 @@ if REDIS_SENTINEL_SERVICE_NAME and REDIS_SENTINELS:
 else:
     REDIS_LOCATION_NO_DB = '%(protocol)s://:%(password)s@%(host)s:%(port)s/{}' % {
         'protocol': REDIS_PROTOCOL,
-        'password': CONFIG.REDIS_PASSWORD,
+        'password': CONFIG.REDIS_PASSWORD_QUOTE,
         'host': CONFIG.REDIS_HOST,
         'port': CONFIG.REDIS_PORT,
     }

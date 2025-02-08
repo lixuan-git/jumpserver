@@ -2,6 +2,7 @@
 #
 import inspect
 import time
+import uuid
 from functools import partial
 from typing import Callable
 
@@ -19,7 +20,7 @@ from django.utils.translation import gettext as _
 from rest_framework.request import Request
 
 from acls.models import LoginACL
-from common.utils import get_request_ip, get_logger, bulk_get, FlashMessageUtil
+from common.utils import get_request_ip_or_data, get_request_ip, get_logger, bulk_get, FlashMessageUtil
 from users.models import User
 from users.utils import LoginBlockUtil, MFABlockUtils, LoginIpBlockUtil
 from . import errors
@@ -50,7 +51,7 @@ auth._get_backends = _get_backends
 def authenticate(request=None, **credentials):
     """
     If the given credentials are valid, return a User object.
-    之所以 hack 这个 auticate
+    之所以 hack 这个 authenticate
     """
     username = credentials.get('username')
 
@@ -75,6 +76,12 @@ def authenticate(request=None, **credentials):
             break
         if user is None:
             continue
+
+        if not user.is_valid:
+            temp_user = user
+            temp_user.backend = backend_path
+            request.error_message = _('User is invalid')
+            return temp_user
 
         # 检查用户是否允许认证
         if not backend.user_allow_authenticate(user):
@@ -101,13 +108,12 @@ auth.authenticate = authenticate
 
 class CommonMixin:
     request: Request
+    _ip = ''
 
     def get_request_ip(self):
-        ip = ''
-        if hasattr(self.request, 'data'):
-            ip = self.request.data.get('remote_addr', '')
-        ip = ip or get_request_ip(self.request)
-        return ip
+        if not self._ip:
+            self._ip = get_request_ip_or_data(self.request)
+        return self._ip
 
     def raise_credential_error(self, error):
         raise self.partial_credential_error(error=error)
@@ -258,7 +264,6 @@ class MFAMixin:
         user = user if user else self.get_user_from_session()
         if not user.mfa_enabled:
             return
-
         # 监测 MFA 是不是屏蔽了
         ip = self.get_request_ip()
         self.check_mfa_is_block(user.username, ip)
@@ -271,6 +276,7 @@ class MFAMixin:
         elif not mfa_backend.is_active():
             msg = backend_error.format(mfa_backend.display_name)
         else:
+            mfa_backend.set_request(self.request)
             ok, msg = mfa_backend.check_code(code)
 
         if ok:
@@ -296,6 +302,7 @@ class MFAMixin:
 
 
 class AuthPostCheckMixin:
+
     @classmethod
     def generate_reset_password_url_with_flash_msg(cls, user, message):
         reset_passwd_url = reverse('authentication:reset-password')
@@ -314,20 +321,26 @@ class AuthPostCheckMixin:
 
     @classmethod
     def _check_passwd_is_too_simple(cls, user: User, password):
-        if user.is_superuser and password == 'admin':
+        if not user.is_auth_backend_model():
+            return
+        if user.check_passwd_too_simple(password):
             message = _('Your password is too simple, please change it for security')
             url = cls.generate_reset_password_url_with_flash_msg(user, message=message)
             raise errors.PasswordTooSimple(url)
 
     @classmethod
     def _check_passwd_need_update(cls, user: User):
-        if user.need_update_password:
+        if not user.is_auth_backend_model():
+            return
+        if user.check_need_update_password():
             message = _('You should to change your password before login')
             url = cls.generate_reset_password_url_with_flash_msg(user, message)
             raise errors.PasswordNeedUpdate(url)
 
     @classmethod
     def _check_password_require_reset_or_not(cls, user: User):
+        if not user.is_auth_backend_model():
+            return
         if user.password_has_expired:
             message = _('Your password has expired, please reset before logging in')
             url = cls.generate_reset_password_url_with_flash_msg(user, message)
@@ -348,12 +361,16 @@ class AuthACLMixin:
             return
 
         if acl.is_action(LoginACL.ActionChoices.reject):
-            raise errors.LoginACLIPAndTimePeriodNotAllowed(user.username, request=self.request)
+            raise errors.LoginACLNotAllowed(user.username, request=self.request)
 
         if acl.is_action(acl.ActionChoices.review):
             self.request.session['auth_confirm_required'] = '1'
             self.request.session['auth_acl_id'] = str(acl.id)
             return
+
+        if acl.is_action(acl.ActionChoices.notice):
+            self.request.session['auth_notice_required'] = '1'
+            self.request.session['auth_acl_id'] = str(acl.id)
 
     def _check_third_party_login_acl(self):
         request = self.request
@@ -412,17 +429,83 @@ class AuthACLMixin:
         return ticket
 
 
-class AuthMixin(CommonMixin, AuthPreCheckMixin, AuthACLMixin, MFAMixin, AuthPostCheckMixin):
+class AuthFaceMixin:
+    request: Request
+
+    @staticmethod
+    def _get_face_cache_key(token):
+        from authentication.const import FACE_CONTEXT_CACHE_KEY_PREFIX
+        return f"{FACE_CONTEXT_CACHE_KEY_PREFIX}_{token}"
+
+    @staticmethod
+    def _is_context_finished(context):
+        return context.get('is_finished', False)
+
+    @staticmethod
+    def _is_context_success(context):
+        return context.get('success', False)
+
+    def create_face_verify_context(self, data=None):
+        token = uuid.uuid4().hex
+        context_data = {
+            "action": "mfa",
+            "token": token,
+            "user_id": self.request.user.id,
+            "is_finished": False
+        }
+        if data:
+            context_data.update(data)
+
+        cache_key = self._get_face_cache_key(token)
+        from .const import FACE_CONTEXT_CACHE_TTL, FACE_SESSION_KEY
+        cache.set(cache_key, context_data, FACE_CONTEXT_CACHE_TTL)
+        self.request.session[FACE_SESSION_KEY] = token
+        return token
+
+    def get_face_token_from_session(self):
+        from authentication.const import FACE_SESSION_KEY
+        token = self.request.session.get(FACE_SESSION_KEY)
+        if not token:
+            raise ValueError("Face recognition token is missing from the session.")
+        return token
+
+    def get_face_verify_context(self):
+        token = self.get_face_token_from_session()
+        cache_key = self._get_face_cache_key(token)
+        context = cache.get(cache_key)
+        if not context:
+            raise ValueError(f"Face recognition context does not exist for token: {token}")
+        return context
+
+    def get_face_code(self):
+        context = self.get_face_verify_context()
+
+        if not self._is_context_finished(context):
+            raise RuntimeError("Face recognition is not yet completed.")
+
+        if not self._is_context_success(context):
+            msg = context.get('error_message', '')
+            raise RuntimeError(msg)
+
+        face_code = context.get('face_code')
+        if not face_code:
+            raise ValueError("Face code is missing from the context.")
+        return face_code
+
+
+class AuthMixin(CommonMixin, AuthPreCheckMixin, AuthACLMixin, AuthFaceMixin, MFAMixin, AuthPostCheckMixin, ):
     request = None
     partial_credential_error = None
 
     key_prefix_captcha = "_LOGIN_INVALID_{}"
 
     def _check_auth_user_is_valid(self, username, password, public_key):
-        user = authenticate(
-            self.request, username=username,
-            password=password, public_key=public_key
-        )
+        credentials = {'username': username}
+        if password:
+            credentials['password'] = password
+        if public_key:
+            credentials['public_key'] = public_key
+        user = authenticate(self.request, **credentials)
         if not user:
             self.raise_credential_error(errors.reason_password_failed)
 
@@ -513,7 +596,8 @@ class AuthMixin(CommonMixin, AuthPreCheckMixin, AuthACLMixin, MFAMixin, AuthPost
     def clear_auth_mark(self):
         keys = [
             'auth_password', 'user_id', 'auth_confirm_required',
-            'auth_ticket_id', 'auth_acl_id'
+            'auth_notice_required', 'auth_ticket_id', 'auth_acl_id',
+            'user_session_id', 'user_log_id', 'can_send_notifications'
         ]
         for k in keys:
             self.request.session.pop(k, '')

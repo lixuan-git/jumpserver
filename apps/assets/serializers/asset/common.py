@@ -11,13 +11,14 @@ from accounts.serializers import AccountSerializer
 from common.const import UUID_PATTERN
 from common.serializers import (
     WritableNestedModelSerializer, SecretReadableMixin,
-    CommonModelSerializer, MethodSerializer
+    CommonModelSerializer, MethodSerializer, ResourceLabelsMixin
 )
 from common.serializers.common import DictSerializer
 from common.serializers.fields import LabeledChoiceField
+from labels.models import Label
 from orgs.mixins.serializers import BulkOrgResourceModelSerializer
 from ...const import Category, AllTypes
-from ...models import Asset, Node, Platform, Label, Protocol
+from ...models import Asset, Node, Platform, Protocol, Host, Device, Database, Cloud, Web, Custom
 
 __all__ = [
     'AssetSerializer', 'AssetSimpleSerializer', 'MiniAssetSerializer',
@@ -29,6 +30,12 @@ __all__ = [
 
 class AssetProtocolsSerializer(serializers.ModelSerializer):
     port = serializers.IntegerField(required=False, allow_null=True, max_value=65535, min_value=0)
+
+    def get_render_help_text(self):
+        if self.parent and self.parent.many:
+            return _('Protocols, format is ["protocol/port"]')
+        else:
+            return _('Protocol, format is name/port')
 
     def to_file_representation(self, data):
         return '{name}/{port}'.format(**data)
@@ -96,10 +103,16 @@ class AssetAccountSerializer(AccountSerializer):
         attrs = super().validate(attrs)
         return self.set_secret(attrs)
 
+    def get_render_help_text(self):
+        return _('Accounts, format [{"name": "x", "username": "x", "secret": "x", "secret_type": "password"}]')
+
     class Meta(AccountSerializer.Meta):
         fields = [
             f for f in AccountSerializer.Meta.fields
-            if f not in ['spec_info']
+            if f not in [
+                'spec_info', 'connectivity', 'labels', 'created_by',
+                'date_update', 'date_created'
+            ]
         ]
         extra_kwargs = {
             **AccountSerializer.Meta.extra_kwargs,
@@ -117,36 +130,46 @@ class AccountSecretSerializer(SecretReadableMixin, CommonModelSerializer):
         }
 
 
-class AssetSerializer(BulkOrgResourceModelSerializer, WritableNestedModelSerializer):
+class NodeDisplaySerializer(serializers.ListField):
+    def get_render_help_text(self):
+        return _('Node path, format ["/org_name/node_name"], if node not exist, will create it')
+
+    def to_internal_value(self, data):
+        return data
+
+    def to_representation(self, data):
+        return data
+
+
+class AssetSerializer(BulkOrgResourceModelSerializer, ResourceLabelsMixin, WritableNestedModelSerializer):
     category = LabeledChoiceField(choices=Category.choices, read_only=True, label=_('Category'))
     type = LabeledChoiceField(choices=AllTypes.choices(), read_only=True, label=_('Type'))
-    labels = AssetLabelSerializer(many=True, required=False, label=_('Label'))
     protocols = AssetProtocolsSerializer(many=True, required=False, label=_('Protocols'), default=())
-    accounts = AssetAccountSerializer(many=True, required=False, allow_null=True, write_only=True, label=_('Account'))
-    nodes_display = serializers.ListField(read_only=False, required=False, label=_("Node path"))
+    accounts = AssetAccountSerializer(many=True, required=False, allow_null=True, write_only=True, label=_('Accounts'))
+    nodes_display = NodeDisplaySerializer(read_only=False, required=False, label=_("Node path"))
     _accounts = None
 
     class Meta:
         model = Asset
-        fields_mini = ['id', 'name', 'address']
-        fields_small = fields_mini + ['is_active', 'comment']
         fields_fk = ['domain', 'platform']
+        fields_mini = ['id', 'name', 'address'] + fields_fk
+        fields_small = fields_mini + ['is_active', 'comment']
         fields_m2m = [
             'nodes', 'labels', 'protocols',
             'nodes_display', 'accounts',
         ]
         read_only_fields = [
             'category', 'type', 'connectivity', 'auto_config',
-            'date_verified', 'created_by', 'date_created',
+            'date_verified', 'created_by', 'date_created', 'date_updated',
         ]
         fields = fields_small + fields_fk + fields_m2m + read_only_fields
         fields_unexport = ['auto_config']
         extra_kwargs = {
             'auto_config': {'label': _('Auto info')},
-            'name': {'label': _("Name")},
+            'name': {'label': _("Name"), 'initial': 'Asset name'},
             'address': {'label': _('Address')},
             'nodes_display': {'label': _('Node path')},
-            'nodes': {'allow_empty': True},
+            'nodes': {'allow_empty': True, 'label': _("Nodes")},
         }
 
     def __init__(self, *args, **kwargs):
@@ -175,6 +198,8 @@ class AssetSerializer(BulkOrgResourceModelSerializer, WritableNestedModelSeriali
         protocols = self.initial_data.get('protocols')
         if protocols is not None:
             return
+        if getattr(self, 'instance', None):
+            return
 
         protocols_required, protocols_default = self._get_protocols_required_default()
         protocol_map = {str(protocol.id): protocol for protocol in protocols_required + protocols_default}
@@ -199,10 +224,14 @@ class AssetSerializer(BulkOrgResourceModelSerializer, WritableNestedModelSeriali
     @classmethod
     def setup_eager_loading(cls, queryset):
         """ Perform necessary eager loading of data. """
-        queryset = queryset.prefetch_related('domain', 'nodes', 'labels', 'protocols') \
+        queryset = queryset.prefetch_related('domain', 'nodes', 'protocols', ) \
             .prefetch_related('platform', 'platform__automation') \
             .annotate(category=F("platform__category")) \
             .annotate(type=F("platform__type"))
+        if queryset.model is Asset:
+            queryset = queryset.prefetch_related('labels__label', 'labels')
+        else:
+            queryset = queryset.prefetch_related('asset_ptr__labels__label', 'asset_ptr__labels')
         return queryset
 
     @staticmethod
@@ -280,15 +309,66 @@ class AssetSerializer(BulkOrgResourceModelSerializer, WritableNestedModelSeriali
             })
         return protocols_data_map.values()
 
+    def validate_platform(self, platform_data):
+        check_models = {Host, Device, Database, Cloud, Web, Custom}
+        if self.Meta.model not in check_models:
+            return platform_data
+        model_name = self.Meta.model.__name__.lower()
+        if model_name != platform_data.category:
+            raise serializers.ValidationError({
+                'platform': f"Platform does not match: {platform_data.name}"
+            })
+        return platform_data
+
     @staticmethod
-    def accounts_create(accounts_data, asset):
+    def update_account_su_from(accounts, include_su_from_accounts):
+        if not include_su_from_accounts:
+            return
+        name_map = {account.name: account for account in accounts}
+        username_secret_type_map = {
+            (account.username, account.secret_type): account for account in accounts
+        }
+
+        for name, username_secret_type in include_su_from_accounts.items():
+            account = name_map.get(name)
+            if not account:
+                continue
+            su_from_account = username_secret_type_map.get(username_secret_type)
+            if su_from_account:
+                account.su_from = su_from_account
+                account.save()
+
+    def accounts_create(self, accounts_data, asset):
+        from accounts.models import AccountTemplate
         if not accounts_data:
             return
+
+        if not isinstance(accounts_data[0], dict):
+            raise serializers.ValidationError({'accounts': _("Invalid data")})
+
+        su_from_name_username_secret_type_map = {}
         for data in accounts_data:
             data['asset'] = asset.id
+            name = data.get('name')
+            su_from = data.pop('su_from', None)
+            template_id = data.get('template', None)
+            if template_id:
+                template = AccountTemplate.objects.get(id=template_id)
+                template.push_params = data.pop('push_params', {})
+                data['params'] = template.push_params
+                if template.su_from:
+                    su_from_name_username_secret_type_map[template.name] = (
+                        template.su_from.username, template.su_from.secret_type
+                    )
+            elif isinstance(su_from, dict):
+                su_from = Account.objects.get(id=su_from.get('id'))
+                su_from_name_username_secret_type_map[name] = (
+                    su_from.username, su_from.secret_type
+                )
         s = AssetAccountSerializer(data=accounts_data, many=True)
         s.is_valid(raise_exception=True)
-        s.save()
+        accounts = s.save()
+        self.update_account_su_from(accounts, su_from_name_username_secret_type_map)
 
     @atomic
     def create(self, validated_data):
@@ -298,10 +378,37 @@ class AssetSerializer(BulkOrgResourceModelSerializer, WritableNestedModelSeriali
         self.perform_nodes_display_create(instance, nodes_display)
         return instance
 
+    @staticmethod
+    def sync_platform_protocols(instance, old_platform):
+        platform = instance.platform
+
+        if str(old_platform.id) == str(instance.platform_id):
+            return
+
+        platform_protocols = {
+            p['name']: p['port']
+            for p in platform.protocols.values('name', 'port')
+        }
+
+        protocols = set(instance.protocols.values_list('name', flat=True))
+        protocol_names = set(platform_protocols) - protocols
+        objs = []
+        for name in protocol_names:
+            objs.append(
+                Protocol(
+                    name=name,
+                    port=platform_protocols[name],
+                    asset_id=instance.id,
+                )
+            )
+        Protocol.objects.bulk_create(objs)
+
     @atomic
     def update(self, instance, validated_data):
+        old_platform = instance.platform
         nodes_display = validated_data.pop('nodes_display', '')
         instance = super().update(instance, validated_data)
+        self.sync_platform_protocols(instance, old_platform)
         self.perform_nodes_display_create(instance, nodes_display)
         return instance
 
@@ -322,8 +429,7 @@ class DetailMixin(serializers.Serializer):
     def get_field_names(self, declared_fields, info):
         names = super().get_field_names(declared_fields, info)
         names.extend([
-            'accounts', 'gathered_info', 'spec_info',
-            'auto_config',
+            'accounts', 'gathered_info', 'spec_info', 'auto_config',
         ])
         return names
 

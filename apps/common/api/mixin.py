@@ -6,20 +6,21 @@ from typing import Callable
 
 from django.db import models
 from django.db.models.signals import m2m_changed
+from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
 
 from common.drf.filters import (
     IDSpmFilterBackend, CustomFilterBackend, IDInFilterBackend,
-    IDNotFilterBackend, NotOrRelFilterBackend
+    IDNotFilterBackend, NotOrRelFilterBackend, LabelFilterBackend
 )
-from common.utils import get_logger
+from common.utils import get_logger, lazyproperty
 from .action import RenderToJsonMixin
 from .serializer import SerializerMixin
 
 __all__ = [
     'CommonApiMixin', 'PaginatedResponseMixin', 'RelationMixin',
-    'ExtraFilterFieldsMixin',
+    'ExtraFilterFieldsMixin'
 ]
 
 logger = get_logger(__name__)
@@ -89,6 +90,7 @@ class RelationMixin:
 
 class QuerySetMixin:
     action: str
+    request: Request
     get_serializer_class: Callable
     get_queryset: Callable
 
@@ -98,11 +100,28 @@ class QuerySetMixin:
             return queryset
         if self.action == 'metadata':
             queryset = queryset.none()
-        if self.action in ['list', 'metadata']:
-            serializer_class = self.get_serializer_class()
-            if serializer_class and hasattr(serializer_class, 'setup_eager_loading'):
-                queryset = serializer_class.setup_eager_loading(queryset)
+        queryset = self.setup_eager_loading(queryset)
         return queryset
+
+    # Todo: 未来考虑自定义 pagination
+    def setup_eager_loading(self, queryset):
+        if self.request.query_params.get('format') not in ['csv', 'xlsx']:
+            return queryset
+        serializer_class = self.get_serializer_class()
+        if not serializer_class or not hasattr(serializer_class, 'setup_eager_loading'):
+            return queryset
+        return serializer_class.setup_eager_loading(queryset)
+
+    def paginate_queryset(self, queryset):
+        page = super().paginate_queryset(queryset)
+        serializer_class = self.get_serializer_class()
+        if page and serializer_class and hasattr(serializer_class, 'setup_eager_loading'):
+            ids = [str(obj.id) for obj in page]
+            page = self.get_queryset().filter(id__in=ids)
+            page = serializer_class.setup_eager_loading(page)
+            page_mapper = {str(obj.id): obj for obj in page}
+            page = [page_mapper.get(_id) for _id in ids if _id in page_mapper]
+        return page
 
 
 class ExtraFilterFieldsMixin:
@@ -111,7 +130,7 @@ class ExtraFilterFieldsMixin:
     """
     default_added_filters = (
         CustomFilterBackend, IDSpmFilterBackend, IDInFilterBackend,
-        IDNotFilterBackend,
+        IDNotFilterBackend, LabelFilterBackend
     )
     filter_backends = api_settings.DEFAULT_FILTER_BACKENDS
     extra_filter_fields = []
@@ -150,9 +169,9 @@ class OrderingFielderFieldsMixin:
     ordering_fields = None
     extra_ordering_fields = []
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.ordering_fields = self._get_ordering_fields()
+    @lazyproperty
+    def ordering_fields(self):
+        return self._get_ordering_fields()
 
     def _get_ordering_fields(self):
         if isinstance(self.__class__.ordering_fields, (list, tuple)):
@@ -179,7 +198,7 @@ class OrderingFielderFieldsMixin:
             model = self.queryset.model
         else:
             queryset = self.get_queryset()
-            model = queryset.model
+            model = None if isinstance(queryset, list) else queryset.model
 
         if not model:
             return []
@@ -201,4 +220,6 @@ class CommonApiMixin(
     SerializerMixin, ExtraFilterFieldsMixin, OrderingFielderFieldsMixin,
     QuerySetMixin, RenderToJsonMixin, PaginatedResponseMixin
 ):
-    pass
+    def is_swagger_request(self):
+        return getattr(self, 'swagger_fake_view', False) or \
+            getattr(self, 'raw_action', '') == 'metadata'

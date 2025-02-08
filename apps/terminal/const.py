@@ -29,6 +29,7 @@ class ReplayStorageType(TextChoices):
     azure = 'azure', 'Azure'
     obs = 'obs', 'OBS'
     cos = 'cos', 'COS'
+    sftp = 'sftp', 'SFTP'
 
 
 class CommandStorageType(TextChoices):
@@ -65,6 +66,9 @@ class TerminalType(TextChoices):
     video_worker = 'video_worker', 'Video Worker'
     chen = 'chen', 'Chen'
     kael = 'kael', 'Kael'
+    panda = 'panda', 'Panda'
+    nec = 'nec', 'Nec'
+    facelive = 'facelive', 'Facelive'
 
     @classmethod
     def types(cls):
@@ -86,11 +90,19 @@ class SessionType(TextChoices):
 
 
 class ActionPermission(TextChoices):
-    readonly = "readonly", _('Read Only')
+    readonly = "readonly", _('Read only')
     writable = "writable", _('Writable')
 
 
 class TaskNameType(TextChoices):
-    kill_session = "kill_session", _('Kill Session')
-    lock_session = "lock_session", _('Lock Session')
-    unlock_session = "unlock_session", _('Unlock Session')
+    kill_session = "kill_session", _('Kill session')
+    lock_session = "lock_session", _('Lock session')
+    unlock_session = "unlock_session", _('Unlock session')
+
+
+class SessionErrorReason(TextChoices):
+    connect_failed = 'connect_failed', _('Connect failed')
+    replay_create_failed = 'replay_create_failed', _('Replay create failed')
+    replay_upload_failed = 'replay_upload_failed', _('Replay upload failed')
+    replay_convert_failed = 'replay_convert_failed', _('Replay convert failed')
+    replay_unsupported = 'replay_unsupported', _('Replay unsupported')

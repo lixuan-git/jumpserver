@@ -10,8 +10,8 @@ __all__ = ['CommandFilterACLViewSet', 'CommandGroupViewSet']
 
 class CommandGroupViewSet(OrgBulkModelViewSet):
     model = models.CommandGroup
-    filterset_fields = ('name',)
-    search_fields = filterset_fields
+    filterset_fields = ('name', 'command_filters')
+    search_fields = ('name',)
     serializer_class = serializers.CommandGroupSerializer
 
 
