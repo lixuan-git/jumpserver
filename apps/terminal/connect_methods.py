@@ -34,6 +34,10 @@ class NativeClient(TextChoices):
     db_client = 'db_client', _('DB Client')
     # Razor
     mstsc = 'mstsc', _('Remote Desktop')
+    rdp_guide = 'rdp_guide', _('RDP Guide')
+    # NEC
+    vnc_client = 'vnc_client', _('VNC Client')
+    vnc_guide = 'vnc_guide', _('VNC Guide')
 
     @classmethod
     def get_native_clients(cls):
@@ -49,6 +53,8 @@ class NativeClient(TextChoices):
             Protocol.mongodb: [cls.db_client, cls.db_guide],
             Protocol.oracle: [cls.db_client, cls.db_guide],
             Protocol.postgresql: [cls.db_client, cls.db_guide],
+            Protocol.sqlserver: [cls.db_client, cls.db_guide],
+            Protocol.vnc: [cls.vnc_guide,]
         }
         return clients
 
@@ -66,7 +72,7 @@ class NativeClient(TextChoices):
 
     @classmethod
     def xpack_methods(cls):
-        return [cls.mstsc]
+        return [cls.mstsc, cls.db_client]
 
     @classmethod
     def get_methods(cls, os='windows'):
@@ -75,7 +81,7 @@ class NativeClient(TextChoices):
         xpack_protocols = Protocol.xpack_protocols()
 
         for protocol, _clients in clients_map.items():
-            if not settings.XPACK_ENABLED and protocol in xpack_protocols:
+            if not settings.XPACK_LICENSE_IS_VALID and protocol in xpack_protocols:
                 continue
             if isinstance(_clients, dict):
                 if os == 'all':
@@ -83,7 +89,7 @@ class NativeClient(TextChoices):
                 else:
                     _clients = _clients.get(os, _clients['default'])
             for client in _clients:
-                if not settings.XPACK_ENABLED and client in cls.xpack_methods():
+                if not settings.XPACK_LICENSE_IS_VALID and client in cls.xpack_methods():
                     continue
                 methods[protocol].append({
                     'value': client.value,
@@ -99,7 +105,9 @@ class AppletMethod:
         from .models import Applet, AppletHost
 
         methods = defaultdict(list)
-        has_applet_hosts = AppletHost.objects.all().exists()
+        has_applet_hosts = AppletHost.objects.filter(is_active=True).exists()
+        if not has_applet_hosts:
+            return methods
         applets = Applet.objects.filter(is_active=True)
         for applet in applets:
             for protocol in applet.protocols:
@@ -108,7 +116,27 @@ class AppletMethod:
                     'label': applet.display_name,
                     'type': 'applet',
                     'icon': applet.icon,
-                    'disabled': not applet.is_active or not has_applet_hosts,
+                    'disabled': not applet.is_active,
+                })
+        return methods
+
+
+class VirtualAppMethod:
+
+    @classmethod
+    def get_methods(cls):
+        from .models import VirtualApp
+        methods = defaultdict(list)
+        if not getattr(settings, 'VIRTUAL_APP_ENABLED'):
+            return methods
+        virtual_apps = VirtualApp.objects.filter(is_active=True)
+        for virtual_app in virtual_apps:
+            for protocol in virtual_app.protocols:
+                methods[protocol].append({
+                    'value': virtual_app.name,
+                    'label': virtual_app.name,
+                    'type': 'virtual_app',
+                    'disabled': not virtual_app.is_active,
                 })
         return methods
 
@@ -129,6 +157,7 @@ class ConnectMethodUtil:
 
                     Protocol.mysql, Protocol.mariadb,
                     Protocol.sqlserver, Protocol.postgresql,
+                    Protocol.oracle
                 ],
                 # 限制客户端的协议，比如 koko 虽然也支持 数据库的 ssh 连接，但是不再这里拉起
                 # Listen协议: [Asset协议]
@@ -144,7 +173,8 @@ class ConnectMethodUtil:
                 'support': [
                     Protocol.mysql, Protocol.postgresql,
                     Protocol.oracle, Protocol.sqlserver,
-                    Protocol.mariadb
+                    Protocol.mariadb, Protocol.db2,
+                    Protocol.dameng
                 ],
                 'match': 'm2m'
             },
@@ -160,7 +190,7 @@ class ConnectMethodUtil:
                 'support': [
                     Protocol.mysql, Protocol.postgresql,
                     Protocol.oracle, Protocol.mariadb,
-                    Protocol.redis
+                    Protocol.redis, Protocol.sqlserver
                 ],
                 'match': 'map'
             },
@@ -175,6 +205,12 @@ class ConnectMethodUtil:
                 'listen': [Protocol.http],
                 'support': [Protocol.chatgpt],
                 'match': 'm2m'
+            },
+            TerminalType.nec: {
+                'web_methods': [],
+                'listen': [Protocol.vnc],
+                'support': [Protocol.vnc],
+                'match': 'map'
             }
         }
         return protocols
@@ -218,7 +254,8 @@ class ConnectMethodUtil:
             'razor': 'TERMINAL_RAZOR_ENABLED',
             'magnus': 'TERMINAL_MAGNUS_ENABLED',
         }
-        disabled_component = [comp for comp, attr in component_setting.items() if not getattr(settings, attr)]
+        disabled_component = [comp for comp, attr in component_setting.items() if
+                              not (getattr(settings, attr) and settings.XPACK_LICENSE_IS_VALID)]
         if not disabled_component:
             return methods
 
@@ -231,8 +268,9 @@ class ConnectMethodUtil:
     def _filter_disable_protocols_connect_methods(cls, methods):
         # 过滤一些特殊的协议方式
         if not getattr(settings, 'TERMINAL_KOKO_SSH_ENABLED'):
-            protocol = Protocol.ssh
-            methods[protocol] = [m for m in methods[protocol] if m['type'] != 'native']
+            disable_ssh_client_protocols = [Protocol.ssh, Protocol.sftp, Protocol.telnet]
+            for protocol in disable_ssh_client_protocols:
+                methods[protocol] = [m for m in methods[protocol] if m['type'] != 'native']
         return methods
 
     @classmethod
@@ -243,6 +281,7 @@ class ConnectMethodUtil:
         methods = defaultdict(list)
         spec_web_methods = WebMethod.get_spec_methods()
         applet_methods = AppletMethod.get_methods()
+        virtual_app_methods = VirtualAppMethod.get_methods()
         native_methods = NativeClient.get_methods(os=os)
 
         for component, component_protocol in cls.components().items():
@@ -294,6 +333,13 @@ class ConnectMethodUtil:
                 method['listen'] = 'rdp'
                 method['component'] = TerminalType.tinker.value
             methods[asset_protocol].extend(applet_methods)
+
+        # 虚拟应用方式，这个只有 panda 提供，并且协议可能是自定义的
+        for protocol, virtual_app_methods in virtual_app_methods.items():
+            for method in virtual_app_methods:
+                method['listen'] = Protocol.http
+                method['component'] = TerminalType.panda.value
+            methods[protocol].extend(virtual_app_methods)
 
         cls._all_methods[os] = methods
         return methods

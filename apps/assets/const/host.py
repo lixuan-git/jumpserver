@@ -19,7 +19,7 @@ class HostTypes(BaseType):
                 'charset': 'utf-8',  # default
                 'domain_enabled': True,
                 'su_enabled': True,
-                'su_methods': ['sudo', 'su'],
+                'su_methods': ['sudo', 'su', 'only_sudo', 'only_su'],
             },
             cls.WINDOWS: {
                 'su_enabled': False,
@@ -53,7 +53,9 @@ class HostTypes(BaseType):
                 'gather_accounts_enabled': True,
                 'verify_account_enabled': True,
                 'change_secret_enabled': True,
-                'push_account_enabled': True
+                'push_account_enabled': True,
+                'remove_account_enabled': True,
+
             },
             cls.WINDOWS: {
                 'ansible_config': {

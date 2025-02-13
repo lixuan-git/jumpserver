@@ -1,8 +1,8 @@
-from django_filters import rest_framework as filters
 from django.db.models import QuerySet
+from django_filters import rest_framework as filters
 
-from orgs.utils import current_org, filter_org_queryset
-from terminal.models import Command, CommandStorage
+from orgs.utils import filter_org_queryset
+from terminal.models import Command, CommandStorage, Session
 
 
 class CommandFilter(filters.FilterSet):
@@ -12,11 +12,13 @@ class CommandFilter(filters.FilterSet):
     command_storage_id = filters.UUIDFilter(method='do_nothing')
     user = filters.CharFilter(lookup_expr='startswith')
     input = filters.CharFilter(lookup_expr='icontains')
+    asset = filters.CharFilter(field_name='asset', lookup_expr='icontains')
+    asset_id = filters.UUIDFilter(method='filter_by_asset_id')
 
     class Meta:
         model = Command
         fields = [
-            'asset', 'account', 'user', 'session', 'risk_level', 'input',
+            'asset', 'asset_id', 'account', 'user', 'session', 'risk_level', 'input',
             'date_from', 'date_to', 'session_id', 'risk_level', 'command_storage_id',
         ]
 
@@ -45,6 +47,15 @@ class CommandFilter(filters.FilterSet):
 
         qs = qs.filter(**filters)
         return qs
+
+    def filter_by_asset_id(self, queryset, name, value):
+        asset_id = self.form.cleaned_data.get('asset_id')
+        filters = {}
+        if asset_id:
+            session_ids = Session.objects.filter(asset_id=asset_id).values_list('id', flat=True)
+            filters['session__in'] = list(session_ids)
+        queryset = queryset.filter(**filters)
+        return queryset
 
 
 class CommandFilterForStorageTree(CommandFilter):

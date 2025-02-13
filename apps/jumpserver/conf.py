@@ -17,7 +17,7 @@ import re
 import sys
 import types
 from importlib import import_module
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 
 import yaml
 from django.urls import reverse_lazy
@@ -28,6 +28,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 XPACK_DIR = os.path.join(BASE_DIR, 'xpack')
 HAS_XPACK = os.path.isdir(XPACK_DIR)
+DEFAULT_ID = '00000000-0000-0000-0000-000000000002'
 
 logger = logging.getLogger('jumpserver.conf')
 
@@ -234,6 +235,7 @@ class Config(dict):
         'SESSION_COOKIE_NAME_PREFIX': None,
         'SESSION_COOKIE_AGE': 3600 * 24,
         'SESSION_EXPIRE_AT_BROWSER_CLOSE': False,
+        'VIEW_ASSET_ONLINE_SESSION_INFO': True,
         'LOGIN_URL': reverse_lazy('authentication:login'),
 
         'CONNECTION_TOKEN_ONETIME_EXPIRATION': 5 * 60,  # 默认(new)
@@ -247,18 +249,32 @@ class Config(dict):
         'AUTH_CUSTOM': False,
         'AUTH_CUSTOM_FILE_MD5': '',
 
-        # Custom Config
         'MFA_CUSTOM': False,
         'MFA_CUSTOM_FILE_MD5': '',
+
+        'SMS_CUSTOM_FILE_MD5': '',
 
         # 临时密码
         'AUTH_TEMP_TOKEN': False,
 
         # Vault
         'VAULT_ENABLED': False,
+        'VAULT_BACKEND': 'local',
+
         'VAULT_HCP_HOST': '',
         'VAULT_HCP_TOKEN': '',
         'VAULT_HCP_MOUNT_POINT': 'jumpserver',
+
+        'VAULT_AZURE_HOST': '',
+        'VAULT_AZURE_CLIENT_ID': '',
+        'VAULT_AZURE_CLIENT_SECRET': '',
+        'VAULT_AZURE_TENANT_ID': '',
+
+        'VAULT_AWS_REGION_NAME': '',
+        'VAULT_AWS_ACCESS_KEY_ID': '',
+        'VAULT_AWS_ACCESS_SECRET_KEY': '',
+
+        'HISTORY_ACCOUNT_CLEAN_LIMIT': 999,
 
         # Cache login password
         'CACHE_LOGIN_PASSWORD_ENABLED': False,
@@ -274,13 +290,35 @@ class Config(dict):
         'AUTH_LDAP_START_TLS': False,
         'AUTH_LDAP_USER_ATTR_MAP': {"username": "cn", "name": "sn", "email": "mail"},
         'AUTH_LDAP_CONNECT_TIMEOUT': 10,
+        'AUTH_LDAP_CACHE_TIMEOUT': 0,
         'AUTH_LDAP_SEARCH_PAGED_SIZE': 1000,
         'AUTH_LDAP_SYNC_IS_PERIODIC': False,
         'AUTH_LDAP_SYNC_INTERVAL': None,
         'AUTH_LDAP_SYNC_CRONTAB': None,
-        'AUTH_LDAP_SYNC_ORG_IDS': ['00000000-0000-0000-0000-000000000002'],
+        'AUTH_LDAP_SYNC_ORG_IDS': [DEFAULT_ID],
+        'AUTH_LDAP_SYNC_RECEIVERS': [],
         'AUTH_LDAP_USER_LOGIN_ONLY_IN_USERS': False,
         'AUTH_LDAP_OPTIONS_OPT_REFERRALS': -1,
+
+        # Auth LDAP HA settings
+        'AUTH_LDAP_HA': False,
+        'AUTH_LDAP_HA_SERVER_URI': 'ldap://localhost:389',
+        'AUTH_LDAP_HA_BIND_DN': 'cn=admin,dc=jumpserver,dc=org',
+        'AUTH_LDAP_HA_BIND_PASSWORD': '',
+        'AUTH_LDAP_HA_SEARCH_OU': 'ou=tech,dc=jumpserver,dc=org',
+        'AUTH_LDAP_HA_SEARCH_FILTER': '(cn=%(user)s)',
+        'AUTH_LDAP_HA_START_TLS': False,
+        'AUTH_LDAP_HA_USER_ATTR_MAP': {"username": "cn", "name": "sn", "email": "mail"},
+        'AUTH_LDAP_HA_CONNECT_TIMEOUT': 10,
+        'AUTH_LDAP_HA_CACHE_TIMEOUT': 0,
+        'AUTH_LDAP_HA_SEARCH_PAGED_SIZE': 1000,
+        'AUTH_LDAP_HA_SYNC_IS_PERIODIC': False,
+        'AUTH_LDAP_HA_SYNC_INTERVAL': None,
+        'AUTH_LDAP_HA_SYNC_CRONTAB': None,
+        'AUTH_LDAP_HA_SYNC_ORG_IDS': [DEFAULT_ID],
+        'AUTH_LDAP_HA_SYNC_RECEIVERS': [],
+        'AUTH_LDAP_HA_USER_LOGIN_ONLY_IN_USERS': False,
+        'AUTH_LDAP_HA_OPTIONS_OPT_REFERRALS': -1,
 
         # OpenID 配置参数
         # OpenID 公有配置参数 (version <= 1.5.8 或 version >= 1.5.8)
@@ -318,14 +356,17 @@ class Config(dict):
         'AUTH_OPENID_KEYCLOAK': True,
         'AUTH_OPENID_SERVER_URL': 'https://keycloak.example.com',
         'AUTH_OPENID_REALM_NAME': None,
+        'OPENID_ORG_IDS': [DEFAULT_ID],
 
         # Raidus 认证
         'AUTH_RADIUS': False,
         'RADIUS_SERVER': 'localhost',
         'RADIUS_PORT': 1812,
         'RADIUS_SECRET': '',
+        'RADIUS_ATTRIBUTES': {},
         'RADIUS_ENCRYPT_PASSWORD': True,
         'OTP_IN_RADIUS': False,
+        'RADIUS_ORG_IDS': [DEFAULT_ID],
 
         # Cas 认证
         'AUTH_CAS': False,
@@ -337,6 +378,7 @@ class Config(dict):
         'CAS_APPLY_ATTRIBUTES_TO_USER': False,
         'CAS_RENAME_ATTRIBUTES': {'cas:user': 'username'},
         'CAS_CREATE_USER': True,
+        'CAS_ORG_IDS': [DEFAULT_ID],
 
         'AUTH_SSO': False,
         'AUTH_SSO_AUTHKEY_TTL': 60 * 15,
@@ -364,6 +406,7 @@ class Config(dict):
         'SAML2_SP_CERT_CONTENT': '',
         'AUTH_SAML2_PROVIDER_AUTHORIZATION_ENDPOINT': '/',
         'AUTH_SAML2_AUTHENTICATION_FAILURE_REDIRECT_URI': '/',
+        'SAML2_ORG_IDS': [DEFAULT_ID],
 
         # OAuth2 认证
         'AUTH_OAUTH2': False,
@@ -382,6 +425,8 @@ class Config(dict):
         'AUTH_OAUTH2_USER_ATTR_MAP': {
             'name': 'name', 'username': 'username', 'email': 'email'
         },
+        'OAUTH2_ORG_IDS': [DEFAULT_ID],
+
         'AUTH_PASSKEY': False,
         'FIDO_SERVER_ID': '',
         'FIDO_SERVER_NAME': 'JumpServer',
@@ -391,24 +436,70 @@ class Config(dict):
         'WECOM_CORPID': '',
         'WECOM_AGENTID': '',
         'WECOM_SECRET': '',
+        'WECOM_RENAME_ATTRIBUTES': {
+            'name': 'name',
+            'username': 'userid',
+            'email': 'email'
+        },
+        'WECOM_ORG_IDS': [DEFAULT_ID],
 
         # 钉钉
         'AUTH_DINGTALK': False,
         'DINGTALK_AGENTID': '',
         'DINGTALK_APPKEY': '',
         'DINGTALK_APPSECRET': '',
+        'DINGTALK_RENAME_ATTRIBUTES': {
+            'name': 'name',
+            'username': 'user_id',
+            'email': 'email'
+        },
+        'DINGTALK_ORG_IDS': [DEFAULT_ID],
 
         # 飞书
         'AUTH_FEISHU': False,
         'FEISHU_APP_ID': '',
         'FEISHU_APP_SECRET': '',
-        'FEISHU_VERSION': 'feishu',
+        'FEISHU_RENAME_ATTRIBUTES': {
+            'name': 'name',
+            'username': 'user_id',
+            'email': 'enterprise_email'
+        },
+        'FEISHU_ORG_IDS': [DEFAULT_ID],
+
+        # Lark
+        'AUTH_LARK': False,
+        'LARK_APP_ID': '',
+        'LARK_APP_SECRET': '',
+        'LARK_RENAME_ATTRIBUTES': {
+            'name': 'en_name',
+            'username': 'user_id',
+            'email': 'enterprise_email'
+        },
+        'LARK_ORG_IDS': [DEFAULT_ID],
+
+        # Slack
+        'AUTH_SLACK': False,
+        'SLACK_CLIENT_ID': '',
+        'SLACK_CLIENT_SECRET': '',
+        'SLACK_BOT_TOKEN': '',
+        'SLACK_RENAME_ATTRIBUTES': {
+            'name': 'real_name',
+            'username': 'name',
+            'email': 'profile.email'
+        },
+        'SLACK_ORG_IDS': [DEFAULT_ID],
 
         'LOGIN_REDIRECT_TO_BACKEND': '',  # 'OPENID / CAS / SAML2
         'LOGIN_REDIRECT_MSG_ENABLED': True,
 
+        # 人脸识别
+        'FACE_RECOGNITION_ENABLED': False,
+        'FACE_RECOGNITION_DISTANCE_THRESHOLD': 0.35,
+        'FACE_RECOGNITION_COSINE_THRESHOLD': 0.95,
+
         'SMS_ENABLED': False,
         'SMS_BACKEND': '',
+        'SMS_CODE_LENGTH': 4,
         'SMS_TEST_PHONE': '',
 
         'ALIBABA_ACCESS_KEY_ID': '',
@@ -439,10 +530,11 @@ class Config(dict):
         'CMPP2_VERIFY_TEMPLATE_CODE': '{code}',
 
         'CUSTOM_SMS_URL': '',
-        'CUSTOM_SMS_API_PARAMS': {'phone_numbers': '{phone_numbers}', 'code': '{code}'},
+        'CUSTOM_SMS_API_PARAMS': {'phone_numbers': '{phone_numbers}', 'content': _('The verification code is: {code}')},
         'CUSTOM_SMS_REQUEST_METHOD': 'get',
 
         # Email
+        'EMAIL_PROTOCOL': 'smtp',
         'EMAIL_CUSTOM_USER_CREATED_SUBJECT': _('Create account successfully'),
         'EMAIL_CUSTOM_USER_CREATED_HONORIFIC': _('Hello'),
         'EMAIL_CUSTOM_USER_CREATED_BODY': _('Your account has been created successfully'),
@@ -454,6 +546,7 @@ class Config(dict):
         # Terminal配置
         'TERMINAL_PASSWORD_AUTH': True,
         'TERMINAL_PUBLIC_KEY_AUTH': True,
+        'TERMINAL_SSH_KEY_LIMIT_COUNT': 10,
         'TERMINAL_HEARTBEAT_INTERVAL': 20,
         'TERMINAL_ASSET_LIST_SORT_BY': 'name',
         'TERMINAL_ASSET_LIST_PAGE_SIZE': 'auto',
@@ -471,7 +564,7 @@ class Config(dict):
         # 安全配置
         'SECURITY_MFA_AUTH': 0,  # 0 不开启 1 全局开启 2 管理员开启
         'SECURITY_MFA_AUTH_ENABLED_FOR_THIRD_PARTY': True,
-        'SECURITY_COMMAND_EXECUTION': True,
+        'SECURITY_COMMAND_EXECUTION': False,
         'SECURITY_COMMAND_BLACKLIST': [
             'reboot', 'shutdown', 'poweroff', 'halt', 'dd', 'half', 'top'
         ],
@@ -495,7 +588,7 @@ class Config(dict):
         'SECURITY_LUNA_REMEMBER_AUTH': True,
         'SECURITY_WATERMARK_ENABLED': True,
         'SECURITY_MFA_VERIFY_TTL': 3600,
-        'SECURITY_UNCOMMON_USERS_TTL': 30,
+        'SECURITY_UNCOMMON_USERS_TTL': 999,
         'VERIFY_CODE_TTL': 60,
         'SECURITY_SESSION_SHARE': True,
         'SECURITY_CHECK_DIFFERENT_CITY_LOGIN': True,
@@ -523,8 +616,9 @@ class Config(dict):
         'SYSLOG_SOCKTYPE': 2,
 
         'PERM_EXPIRED_CHECK_PERIODIC': 60 * 60,
+        'PERM_TREE_REGEN_INTERVAL': 1,
         'FLOWER_URL': "127.0.0.1:5555",
-        'LANGUAGE_CODE': 'zh',
+        'LANGUAGE_CODE': 'en',
         'TIME_ZONE': 'Asia/Shanghai',
         'FORCE_SCRIPT_NAME': '',
         'SESSION_COOKIE_SECURE': False,
@@ -533,7 +627,6 @@ class Config(dict):
         'REFERER_CHECK_ENABLED': False,
         'SESSION_ENGINE': 'cache',
         'SESSION_SAVE_EVERY_REQUEST': True,
-        'SESSION_EXPIRE_AT_BROWSER_CLOSE_FORCE': False,
         'SERVER_REPLAY_STORAGE': {},
         'SECURITY_DATA_CRYPTO_ALGO': None,
         'GMSSL_ENABLED': False,
@@ -543,14 +636,18 @@ class Config(dict):
         'MAGNUS_ORACLE_PORTS': '30000-30030',
 
         # 记录清理清理
-        'LOGIN_LOG_KEEP_DAYS': 200,
-        'TASK_LOG_KEEP_DAYS': 90,
-        'OPERATE_LOG_KEEP_DAYS': 200,
-        'ACTIVITY_LOG_KEEP_DAYS': 200,
-        'FTP_LOG_KEEP_DAYS': 200,
-        'CLOUD_SYNC_TASK_EXECUTION_KEEP_DAYS': 30,
+        'LOGIN_LOG_KEEP_DAYS': 180,
+        'TASK_LOG_KEEP_DAYS': 180,
+        'OPERATE_LOG_KEEP_DAYS': 180,
+        'ACTIVITY_LOG_KEEP_DAYS': 180,
+        'FTP_LOG_KEEP_DAYS': 180,
+        'CLOUD_SYNC_TASK_EXECUTION_KEEP_DAYS': 180,
+        'JOB_EXECUTION_KEEP_DAYS': 180,
+        'PASSWORD_CHANGE_LOG_KEEP_DAYS': 999,
+        'ACCOUNT_CHANGE_SECRET_RECORD_KEEP_DAYS': 180,
 
         'TICKETS_ENABLED': True,
+        'TICKETS_DIRECT_APPROVE': False,
 
         # 废弃的
         'DEFAULT_ORG_SHOW_ALL_USERS': True,
@@ -566,7 +663,7 @@ class Config(dict):
 
         # 导航栏 帮助
         'HELP_DOCUMENT_URL': 'https://docs.jumpserver.org/zh/v3/',
-        'HELP_SUPPORT_URL': 'http://www.jumpserver.org/support/',
+        'HELP_SUPPORT_URL': 'https://www.jumpserver.org/support/',
 
         'FORGOT_PASSWORD_URL': '',
         'HEALTH_CHECK_TOKEN': '',
@@ -575,12 +672,41 @@ class Config(dict):
         'APPLET_DOWNLOAD_HOST': '',
 
         # FTP 文件上传下载备份阈值，单位(M)，当值小于等于0时，不备份
-        'FTP_FILE_MAX_STORE': 100,
+        'FTP_FILE_MAX_STORE': 0,
 
-        # API 请求次数限制
-        'MAX_LIMIT_PER_PAGE': 100,
+        # API 分页
+        'MAX_LIMIT_PER_PAGE': 10000,
 
         'LIMIT_SUPER_PRIV': False,
+
+        # Chat AI
+        'CHAT_AI_ENABLED': False,
+        'CHAT_AI_TYPE': 'gpt',
+        'GPT_BASE_URL': '',
+        'GPT_API_KEY': '',
+        'GPT_PROXY': '',
+        'GPT_MODEL': 'gpt-4o-mini',
+        'DEEPSEEK_BASE_URL': '',
+        'DEEPSEEK_API_KEY': '',
+        'DEEPSEEK_PROXY': '',
+        'DEEPSEEK_MODEL': 'deepseek-chat',
+        'VIRTUAL_APP_ENABLED': False,
+
+        'FILE_UPLOAD_SIZE_LIMIT_MB': 200,
+
+        'TICKET_APPLY_ASSET_SCOPE': 'all',
+
+        # Ansible Receptor
+        'RECEPTOR_ENABLED': False,
+        'ANSIBLE_RECEPTOR_GATEWAY_PROXY_HOST': 'jms_celery',
+        'ANSIBLE_RECEPTOR_TCP_LISTEN_ADDRESS': 'receptor:7521',
+
+        'FILE_UPLOAD_TEMP_DIR': None,
+
+        'LOKI_LOG_ENABLED': False,
+        'LOKI_BASE_URL': 'http://loki:3100',
+
+        'TOOL_USER_ENABLED': False,
     }
 
     old_config_map = {
@@ -673,6 +799,14 @@ class Config(dict):
         if openid_config:
             self.set_openid_config(openid_config)
 
+    def compatible_redis(self):
+        redis_config = {
+            'REDIS_PASSWORD': str(self.REDIS_PASSWORD),
+            'REDIS_PASSWORD_QUOTE': quote(str(self.REDIS_PASSWORD)),
+        }
+        for key, value in redis_config.items():
+            self[key] = value
+
     def compatible(self):
         """
         对配置做兼容处理
@@ -684,6 +818,8 @@ class Config(dict):
         """
         # 兼容 OpenID 配置
         self.compatible_auth_openid()
+        # 兼容 Redis 配置
+        self.compatible_redis()
 
     def convert_type(self, k, v):
         default_value = self.defaults.get(k)

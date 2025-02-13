@@ -5,14 +5,17 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils.translation import gettext_lazy as _
 
-from common.local import encrypted_field_set
+from common.local import similar_encrypted_pattern, exclude_encrypted_fields
 from common.utils import get_request_ip, get_logger
 from common.utils.encode import Singleton
 from common.utils.timezone import as_current_tz
 from jumpserver.utils import current_request
 from orgs.models import Organization
 from orgs.utils import get_current_org_id
+from settings.models import Setting
 from settings.serializers import SettingsSerializer
+from users.models import Preference
+from users.serializers import PreferenceSerializer
 from .backends import get_operate_log_storage
 
 logger = get_logger(__name__)
@@ -55,7 +58,7 @@ class OperatorLogHandler(metaclass=Singleton):
             return
 
         key = '%s_%s' % (self.CACHE_KEY, instance_id)
-        cache.set(key, instance_dict, 3 * 60)
+        cache.set(key, instance_dict, 3)
 
     def get_instance_dict_from_cache(self, instance_id):
         if instance_id is None:
@@ -87,19 +90,15 @@ class OperatorLogHandler(metaclass=Singleton):
         return log_id, before, after
 
     @staticmethod
-    def get_resource_display_from_setting(resource):
-        resource_display = None
-        setting_serializer = SettingsSerializer()
-        label = setting_serializer.get_field_label(resource)
-        if label is not None:
-            resource_display = label
-        return resource_display
-
-    def get_resource_display(self, resource):
-        resource_display = str(resource)
-        return_value = self.get_resource_display_from_setting(resource_display)
-        if return_value is not None:
-            resource_display = return_value
+    def get_resource_display(resource):
+        if isinstance(resource, Setting):
+            serializer = SettingsSerializer()
+            resource_display = serializer.get_field_label(resource.name)
+        elif isinstance(resource, Preference):
+            serializer = PreferenceSerializer()
+            resource_display = serializer.get_field_label(resource.name)
+        else:
+            resource_display = str(resource)
         return resource_display
 
     @staticmethod
@@ -110,19 +109,31 @@ class OperatorLogHandler(metaclass=Singleton):
             return ','.join(value)
         return json.dumps(value)
 
+    @staticmethod
+    def __similar_check(key):
+        if not key or key in exclude_encrypted_fields:
+            return False
+
+        return bool(similar_encrypted_pattern.search(key))
+
     def __data_processing(self, dict_item, loop=True):
         encrypt_value = '******'
-        for key, value in dict_item.items():
+        new_data = {}
+        for label, item in dict_item.items():
+            if not isinstance(item, (dict,)):
+                continue
+            value = item.get('value', '')
+            field_name = item.get('name', '')
             if isinstance(value, bool):
                 value = _('Yes') if value else _('No')
             elif isinstance(value, (list, tuple)):
                 value = self.serialized_value(value)
             elif isinstance(value, dict) and loop:
                 self.__data_processing(value, loop=False)
-            if key in encrypted_field_set:
+            if self.__similar_check(field_name):
                 value = encrypt_value
-            dict_item[key] = value
-        return dict_item
+            new_data[label] = value
+        return new_data
 
     def data_processing(self, before, after):
         if before:

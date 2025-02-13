@@ -18,7 +18,7 @@ from common.utils import lazyproperty, pretty_string, bulk_get
 from common.utils.timezone import as_current_tz
 from orgs.mixins.models import JMSOrgBaseModel
 from orgs.utils import tmp_to_org
-from terminal.models import Applet
+from terminal.models import Applet, VirtualApp
 
 
 def date_expired_default():
@@ -50,6 +50,7 @@ class ConnectionToken(JMSOrgBaseModel):
         on_delete=models.SET_NULL, null=True, blank=True,
         verbose_name=_('From ticket')
     )
+    face_monitor_token = models.CharField(max_length=128, null=True, blank=True, verbose_name=_("Face monitor token"))
     is_active = models.BooleanField(default=True, verbose_name=_("Active"))
 
     class Meta:
@@ -82,12 +83,15 @@ class ConnectionToken(JMSOrgBaseModel):
         self.save(update_fields=['date_expired'])
 
     def set_reusable(self, is_reusable):
+        if not settings.CONNECTION_TOKEN_REUSABLE:
+            return
         self.is_reusable = is_reusable
         if self.is_reusable:
             seconds = settings.CONNECTION_TOKEN_REUSABLE_EXPIRATION
         else:
             seconds = settings.CONNECTION_TOKEN_ONETIME_EXPIRATION
-        self.date_expired = timezone.now() + timedelta(seconds=seconds)
+
+        self.date_expired = self.date_created + timedelta(seconds=seconds)
         self.save(update_fields=['is_reusable', 'date_expired'])
 
     def renewal(self):
@@ -97,10 +101,9 @@ class ConnectionToken(JMSOrgBaseModel):
 
     @lazyproperty
     def permed_account(self):
-        from perms.utils import PermAccountUtil
-        permed_account = PermAccountUtil().validate_permission(
-            self.user, self.asset, self.account
-        )
+        from perms.utils import PermAssetDetailUtil
+        permed_account = PermAssetDetailUtil(self.user, self.asset) \
+            .validate_permission(self.account, self.protocol)
         return permed_account
 
     @lazyproperty
@@ -115,6 +118,7 @@ class ConnectionToken(JMSOrgBaseModel):
         if not self.is_active:
             error = _('Connection token inactive')
             raise PermissionDenied(error)
+
         if self.is_expired:
             error = _('Connection token expired at: {}').format(as_current_tz(self.date_expired))
             raise PermissionDenied(error)
@@ -177,6 +181,15 @@ class ConnectionToken(JMSOrgBaseModel):
         }
         return options
 
+    def get_virtual_app_option(self):
+        method = self.connect_method_object
+        if not method or method.get('type') != 'virtual_app' or method.get('disabled', False):
+            return None
+        virtual_app = VirtualApp.objects.filter(name=method.get('value')).first()
+        if not virtual_app:
+            return None
+        return virtual_app
+
     def get_applet_option(self):
         method = self.connect_method_object
         if not method or method.get('type') != 'applet' or method.get('disabled', False):
@@ -188,30 +201,27 @@ class ConnectionToken(JMSOrgBaseModel):
 
         host_account = applet.select_host_account(self.user, self.asset)
         if not host_account:
-            raise JMSException({'error': 'No host account available'})
+            raise JMSException({'error': 'No host account available, please check the applet, host and account'})
 
-        host, account, lock_key, ttl = bulk_get(host_account, ('host', 'account', 'lock_key', 'ttl'))
+        host, account, lock_key = bulk_get(host_account, ('host', 'account', 'lock_key'))
         gateway = host.domain.select_gateway() if host.domain else None
+        platform = host.platform
 
         data = {
-            'id': account.id,
+            'id': lock_key,
             'applet': applet,
             'host': host,
             'gateway': gateway,
+            'platform': platform,
             'account': account,
             'remote_app_option': self.get_remote_app_option()
         }
-        token_account_relate_key = f'token_account_relate_{account.id}'
-        cache.set(token_account_relate_key, lock_key, ttl)
         return data
 
     @staticmethod
-    def release_applet_account(account_id):
-        token_account_relate_key = f'token_account_relate_{account_id}'
-        lock_key = cache.get(token_account_relate_key)
+    def release_applet_account(lock_key):
         if lock_key:
             cache.delete(lock_key)
-            cache.delete(token_account_relate_key)
             return True
 
     @lazyproperty

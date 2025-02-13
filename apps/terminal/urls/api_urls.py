@@ -30,6 +30,10 @@ router.register(r'applet-hosts', api.AppletHostViewSet, 'applet-host')
 router.register(r'applet-publications', api.AppletPublicationViewSet, 'applet-publication')
 router.register(r'applet-host-deployments', api.AppletHostDeploymentViewSet, 'applet-host-deployment')
 router.register(r'db-listen-ports', api.DBListenPortViewSet, 'db-listen-ports')
+router.register(r'virtual-apps', api.VirtualAppViewSet, 'virtual-app')
+router.register(r'app-providers', api.AppProviderViewSet, 'app-provider')
+router.register(r'app-providers/((?P<provider>[^/.]+)/)?apps', api.AppProviderAppViewSet, 'app-provider-app')
+router.register(r'virtual-app-publications', api.VirtualAppPublicationViewSet, 'virtual-app-publication')
 
 urlpatterns = [
     path('my-sessions/', api.MySessionAPIView.as_view(), name='my-session'),
@@ -50,6 +54,8 @@ urlpatterns = [
     # components
     path('components/metrics/', api.ComponentsMetricsAPIView.as_view(), name='components-metrics'),
     path('components/connect-methods/', api.ConnectMethodListApi.as_view(), name='connect-methods'),
+    path('loki/logs/', api.LokiLogAPI.as_view(), name='loki-logs'),
+    path('encrypted-config/', api.EncryptedTerminalConfig.as_view(), name='encrypted-terminal-config'),
 ]
 
 urlpatterns += router.urls
