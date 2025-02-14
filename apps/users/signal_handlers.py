@@ -12,13 +12,22 @@ from django_cas_ng.signals import cas_user_authenticated
 from audits.models import UserSession
 from authentication.backends.oauth2.signals import oauth2_create_or_update_user
 from authentication.backends.oidc.signals import openid_create_or_update_user
+from authentication.backends.radius.signals import radius_create_user
 from authentication.backends.saml2.signals import saml2_create_or_update_user
-from common.const.crontab import CRONTAB_AT_PM_TWO
+from common.const.crontab import CRONTAB_AT_AM_TWO
 from common.decorators import on_transaction_commit
+from common.sessions.cache import user_session_manager
+from common.signals import django_ready
 from common.utils import get_logger
 from jumpserver.utils import get_current_request
 from ops.celery.decorator import register_as_period_task
-from .models import User, UserPasswordHistory
+from orgs.models import Organization
+from orgs.utils import tmp_to_root_org
+from rbac.builtin import BuiltinRole
+from rbac.const import Scope
+from rbac.models import RoleBinding
+from settings.signals import setting_changed
+from .models import User, UserPasswordHistory, UserGroup
 from .signals import post_user_create
 
 logger = get_logger(__file__)
@@ -37,12 +46,18 @@ def check_only_allow_exist_user_auth(created):
 
 
 def user_authenticated_handle(user, created, source, attrs=None, **kwargs):
+    if not check_only_allow_exist_user_auth(created):
+        return
+
     if created:
         user.source = source
         user.save()
 
-    if not check_only_allow_exist_user_auth(created):
-        return
+    if created:
+        org_ids = bind_user_to_org_role(user)
+        if isinstance(attrs, dict):
+            group_names = attrs.get('groups')
+            bind_user_to_group(org_ids, group_names, user)
 
     if not attrs:
         return
@@ -64,16 +79,15 @@ def user_authenticated_handle(user, created, source, attrs=None, **kwargs):
 
 @receiver(post_save, sender=User)
 def save_passwd_change(sender, instance: User, **kwargs):
-    passwords = UserPasswordHistory.objects \
-        .filter(user=instance) \
-        .order_by('-date_created') \
-        .values_list('password', flat=True)
-    passwords = passwords[:int(settings.OLD_PASSWORD_HISTORY_LIMIT_COUNT)]
+    if instance.source != User.Source.local.value or not instance.password:
+        return
 
-    for p in passwords:
-        if instance.password == p:
-            break
-    else:
+    passwords = UserPasswordHistory.objects \
+                    .filter(user=instance) \
+                    .order_by('-date_created') \
+                    .values_list('password', flat=True)[:settings.OLD_PASSWORD_HISTORY_LIMIT_COUNT]
+
+    if instance.password not in list(passwords):
         UserPasswordHistory.objects.create(
             user=instance, password=instance.password,
             date_created=instance.date_password_last_updated
@@ -107,7 +121,9 @@ def on_user_create(sender, user=None, **kwargs):
     logger.debug("Receive user `{}` create signal".format(user.name))
     from .utils import send_user_created_mail
     logger.info("   - Sending welcome mail ...".format(user.name))
-    if user.can_send_created_mail():
+    request = get_current_request()
+    password_strategy = getattr(request, 'password_strategy', '')
+    if user.can_send_created_mail() and password_strategy == 'email':
         send_user_created_mail(user)
 
 
@@ -129,17 +145,18 @@ def on_oauth2_create_or_update_user(sender, user, created, attrs, **kwargs):
     user_authenticated_handle(user, created, source, attrs, **kwargs)
 
 
-@receiver(populate_user)
-def on_ldap_create_user(sender, user, ldap_user, **kwargs):
-    if user and user.username not in ['admin']:
-        exists = User.objects.filter(username=user.username).exists()
-        if not exists:
-            user.source = user.Source.ldap.value
-            user.save()
+@receiver(radius_create_user)
+def radius_create_user(sender, user, **kwargs):
+    user.source = user.Source.radius.value
+    user.save()
+    bind_user_to_org_role(user)
 
 
 @receiver(openid_create_or_update_user)
-def on_openid_create_or_update_user(sender, request, user, created, name, username, email, **kwargs):
+def on_openid_create_or_update_user(sender, request, user, created, attrs, **kwargs):
+    if not check_only_allow_exist_user_auth(created):
+        return
+
     if created:
         logger.debug(
             "Receive OpenID user created signal: {}, "
@@ -147,9 +164,13 @@ def on_openid_create_or_update_user(sender, request, user, created, name, userna
         )
         user.source = User.Source.openid.value
         user.save()
+        org_ids = bind_user_to_org_role(user)
+        group_names = attrs.get('groups')
+        bind_user_to_group(org_ids, group_names, user)
 
-    if not check_only_allow_exist_user_auth(created):
-        return
+    name = attrs.get('name')
+    username = attrs.get('username')
+    email = attrs.get('email')
 
     if not created and settings.AUTH_OPENID_ALWAYS_UPDATE_USER:
         logger.debug(
@@ -163,13 +184,100 @@ def on_openid_create_or_update_user(sender, request, user, created, name, userna
         user.save()
 
 
-@shared_task(verbose_name=_('Clean audits session task log'))
-@register_as_period_task(crontab=CRONTAB_AT_PM_TWO)
-def clean_audits_log_period():
+@receiver(populate_user)
+def on_ldap_create_user(sender, user, ldap_user, **kwargs):
+    if user and user.username not in ['admin']:
+        exists = User.objects.filter(username=user.username).exists()
+        if not exists:
+            user.source = user.Source.ldap.value
+            user.save()
+
+
+@shared_task(
+    verbose_name=_('Clean up expired user sessions'),
+    description=_(
+        """After logging in via the web, a user session record is created. At 2 a.m. every day, 
+        the system cleans up inactive user devices"""
+    )
+)
+@register_as_period_task(crontab=CRONTAB_AT_AM_TWO)
+def clean_expired_user_session_period():
     UserSession.clear_expired_sessions()
 
 
 @receiver(user_logged_out)
 def user_logged_out_callback(sender, request, user, **kwargs):
     session_key = request.session.session_key
+    user_session_manager.remove(session_key)
     UserSession.objects.filter(key=session_key).delete()
+
+
+@receiver(setting_changed)
+@on_transaction_commit
+def on_auth_setting_changed_clear_source_choice(sender, name='', **kwargs):
+    if name.startswith('AUTH_'):
+        User._source_choices = []
+
+
+@receiver(django_ready)
+def on_django_ready_refresh_source(sender, **kwargs):
+    User._source_choices = []
+
+
+def bind_user_to_org_role(user):
+    source = user.source.upper()
+    org_ids = getattr(settings, f"{source}_ORG_IDS", None)
+
+    if not org_ids:
+        logger.error(f"User {user} has no {source} orgs")
+        return
+
+    org_role_ids = [BuiltinRole.org_user.id]
+
+    bindings = [
+        RoleBinding(
+            user=user, org_id=org_id, scope=Scope.org,
+            role_id=role_id,
+        )
+        for role_id in org_role_ids
+        for org_id in org_ids
+    ]
+
+    RoleBinding.objects.bulk_create(bindings, ignore_conflicts=True)
+    return org_ids
+
+
+def bind_user_to_group(org_ids, group_names, user):
+    if isinstance(group_names, str):
+        group_names = [group_names]
+
+    if not isinstance(group_names, list):
+        return
+
+    org_ids = org_ids or [Organization.DEFAULT_ID]
+
+    with tmp_to_root_org():
+        existing_groups = UserGroup.objects.filter(org_id__in=org_ids).values_list('org_id', 'name')
+
+        org_groups_map = {}
+        for org_id, group_name in existing_groups:
+            org_groups_map.setdefault(org_id, []).append(group_name)
+
+        groups_to_create = []
+        for org_id in org_ids:
+            existing_group_names = set(org_groups_map.get(org_id, []))
+            new_group_names = set(group_names) - existing_group_names
+            groups_to_create.extend(
+                UserGroup(org_id=org_id, name=name) for name in new_group_names
+            )
+
+        UserGroup.objects.bulk_create(groups_to_create)
+
+        user_groups = UserGroup.objects.filter(org_id__in=org_ids, name__in=group_names)
+
+        user_group_links = [
+            User.groups.through(user_id=user.id, usergroup_id=group.id)
+            for group in user_groups
+        ]
+        if user_group_links:
+            User.groups.through.objects.bulk_create(user_group_links)

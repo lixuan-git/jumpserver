@@ -1,7 +1,7 @@
 - hosts: oracle
   gather_facts: no
   vars:
-    ansible_python_interpreter: /usr/local/bin/python
+    ansible_python_interpreter: /opt/py3/bin/python
 
   tasks:
     - name: Test Oracle connection
@@ -39,3 +39,4 @@
         login_host: "{{ jms_asset.address }}"
         login_port: "{{ jms_asset.port }}"
         login_database: "{{ jms_asset.spec_info.db_name }}"
+        mode: "{{ account.mode }}"

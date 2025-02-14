@@ -1,9 +1,34 @@
-ARG VERSION
-FROM registry.fit2cloud.com/jumpserver/xpack:${VERSION} as build-xpack
-FROM jumpserver/core:${VERSION}
+ARG VERSION=dev
+
+FROM registry.fit2cloud.com/jumpserver/xpack:${VERSION} AS build-xpack
+FROM jumpserver/core:${VERSION}-ce
 
 COPY --from=build-xpack /opt/xpack /opt/jumpserver/apps/xpack
 
-RUN --mount=type=cache,target=/root/.cache \
-    set -ex \
-    && poetry install --only=xpack
+ARG TOOLS="                           \
+        g++                           \
+        curl                          \
+        iputils-ping                  \
+        netcat-openbsd                \
+        nmap                          \
+        telnet                        \
+        vim                           \
+        wget"
+
+RUN set -ex \
+    && apt-get update \
+    && apt-get -y install --no-install-recommends ${TOOLS} \
+    && apt-get clean all \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/jumpserver
+
+ARG PIP_MIRROR=https://pypi.org/simple
+ENV POETRY_PYPI_MIRROR_URL=${PIP_MIRROR}
+COPY poetry.lock pyproject.toml ./
+RUN set -ex \
+    && . /opt/py3/bin/activate \
+    && pip install poetry poetry-plugin-pypi-mirror -i ${PIP_MIRROR} \
+    && poetry install --only xpack \
+    && poetry cache clear pypi --all
+

@@ -15,6 +15,7 @@ from assets.models import Platform
 from common.db.models import JMSBaseModel
 from common.utils import lazyproperty, get_logger
 from common.utils.yml import yaml_load_with_i18n
+from terminal.const import PublishStatus
 
 logger = get_logger(__name__)
 
@@ -162,8 +163,8 @@ class Applet(JMSBaseModel):
         for host_id in using_host_ids.values():
             counts[host_id] += 1
 
-        hosts = list(sorted(hosts, key=lambda h: counts[h.id]))
-        return hosts[0]
+        hosts = list(sorted(hosts, key=lambda h: counts[str(h.id)]))
+        return hosts[0] if hosts else None
 
     def select_host(self, user, asset):
         hosts = self.hosts.filter(is_active=True)
@@ -171,11 +172,12 @@ class Applet(JMSBaseModel):
         if not hosts:
             return None
 
-        spec_label = asset.labels.filter(name__in=['AppletHost', '发布机']).first()
-        if spec_label:
-            matched = [host for host in hosts if host.name == spec_label.value]
-            if matched:
-                return matched[0]
+        spec_label_values = asset.get_labels().filter(
+            name__in=['AppletHost', '发布机']
+        ).values_list('value', flat=True)
+        host_matched = [host for host in hosts if host.name in spec_label_values]
+        if host_matched:
+            return random.choice(host_matched)
 
         hosts = [h for h in hosts if h.auto_create_accounts]
         prefer_key = self.host_prefer_key_tpl.format(user.id)
@@ -186,6 +188,8 @@ class Applet(JMSBaseModel):
             host = pref_host[0]
         else:
             host = self._select_by_load(hosts)
+            if host is None:
+                return
             cache.set(prefer_key, str(host.id), timeout=None)
         return host
 
@@ -221,7 +225,9 @@ class Applet(JMSBaseModel):
         accounts = valid_accounts.exclude(username__in=accounts_username_used)
         public_accounts = accounts.filter(username__startswith='jms_')
         if not public_accounts:
-            public_accounts = accounts.exclude(username__in=['Administrator', 'root'])
+            public_accounts = accounts \
+                .exclude(username__in=['Administrator', 'root']) \
+                .exclude(username__startswith='js_')
         account = self.random_select_prefer_account(user, host, public_accounts)
         return account
 
@@ -256,15 +262,32 @@ class Applet(JMSBaseModel):
                 account = private_account
         return account
 
+    @staticmethod
+    def try_to_use_same_account(user, host):
+        from accounts.models import VirtualAccount
+
+        if not host.using_same_account:
+            return
+        account = VirtualAccount.get_same_account(user, host)
+        if not account.secret:
+            return
+        return account
+
     def select_host_account(self, user, asset):
         # 选择激活的发布机
         host = self.select_host(user, asset)
         if not host:
             return None
         logger.info('Select applet host: {}'.format(host.name))
-
+        if not self.is_available_on_host(host):
+            logger.debug('No available applet {} for applet host: {}'.format(self.name, host.name))
+            return None
         valid_accounts = host.accounts.all().filter(is_active=True, privileged=False)
-        account = self.try_to_use_private_account(user, host, valid_accounts)
+        account = self.try_to_use_same_account(user, host)
+        if not account:
+            logger.debug('No same account, try to use private account')
+            account = self.try_to_use_private_account(user, host, valid_accounts)
+
         if not account:
             logger.debug('No private account, try to use public account')
             account = self.select_a_public_account(user, host, valid_accounts)
@@ -280,10 +303,9 @@ class Applet(JMSBaseModel):
         res = {
             'host': host,
             'account': account,
-            'lock_key': lock_key,
-            'ttl': ttl
+            'lock_key': lock_key
         }
-        logger.debug('Select host and account: {}'.format(res))
+        logger.debug('Select host and account: {}-{}'.format(host.name, account.username))
         return res
 
     def delete(self, using=None, keep_parents=False):
@@ -291,6 +313,14 @@ class Applet(JMSBaseModel):
         if platform and platform.assets.count() == 0:
             platform.delete()
         return super().delete(using, keep_parents)
+
+    def is_available_on_host(self, host):
+        publication = AppletPublication.objects.filter(applet=self, host=host).first()
+        if not publication:
+            return False
+        if publication.status in [PublishStatus.pending, PublishStatus.failed]:
+            return False
+        return True
 
 
 class AppletPublication(JMSBaseModel):
@@ -303,3 +333,4 @@ class AppletPublication(JMSBaseModel):
 
     class Meta:
         unique_together = ('applet', 'host')
+        verbose_name = _("Applet Publication")

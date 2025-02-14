@@ -1,4 +1,4 @@
-from django.utils.translation import gettext as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 from assets.models import Asset, Node, BaseAutomation, AutomationExecution
@@ -31,12 +31,12 @@ class BaseAutomationSerializer(PeriodTaskSerializerMixin, BulkOrgResourceModelSe
         extra_kwargs = {
             'name': {'required': True},
             'type': {'read_only': True},
-            'periodic_display': {'label': _('Periodic perform')},
         }
 
 
 class AutomationExecutionSerializer(serializers.ModelSerializer):
     snapshot = serializers.SerializerMethodField(label=_('Automation snapshot'))
+    status = serializers.SerializerMethodField(label=_("Status"))
     trigger = LabeledChoiceField(choices=Trigger.choices, read_only=True, label=_("Trigger mode"))
 
     class Meta:
@@ -45,6 +45,14 @@ class AutomationExecutionSerializer(serializers.ModelSerializer):
             'trigger', 'date_start', 'date_finished', 'snapshot', 'status'
         ]
         fields = ['id', 'automation'] + read_only_fields
+
+    @staticmethod
+    def get_status(obj):
+        if obj.status == 'success':
+            return _("Success")
+        elif obj.status == 'pending':
+            return _("Pending")
+        return obj.status
 
     @staticmethod
     def get_snapshot(obj):

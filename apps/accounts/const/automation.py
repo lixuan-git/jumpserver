@@ -16,7 +16,7 @@ DEFAULT_PASSWORD_RULES = {
 __all__ = [
     'AutomationTypes', 'SecretStrategy', 'SSHKeyStrategy', 'Connectivity',
     'DEFAULT_PASSWORD_LENGTH', 'DEFAULT_PASSWORD_RULES', 'TriggerChoice',
-    'PushAccountActionChoice',
+    'PushAccountActionChoice', 'AccountBackupType', 'ChangeSecretRecordStatusChoice',
 ]
 
 
@@ -24,6 +24,7 @@ class AutomationTypes(models.TextChoices):
     push_account = 'push_account', _('Push account')
     change_secret = 'change_secret', _('Change secret')
     verify_account = 'verify_account', _('Verify account')
+    remove_account = 'remove_account', _('Remove account')
     gather_accounts = 'gather_accounts', _('Gather accounts')
     verify_gateway_account = 'verify_gateway_account', _('Verify gateway account')
 
@@ -48,9 +49,9 @@ class SecretStrategy(models.TextChoices):
 
 
 class SSHKeyStrategy(models.TextChoices):
-    add = 'add', _('Append SSH KEY')
-    set = 'set', _('Empty and append SSH KEY')
     set_jms = 'set_jms', _('Replace (Replace only keys pushed by JumpServer) ')
+    set = 'set', _('Empty and append SSH KEY')
+    add = 'add', _('Append SSH KEY')
 
 
 class TriggerChoice(models.TextChoices, TreeChoices):
@@ -95,3 +96,16 @@ class TriggerChoice(models.TextChoices, TreeChoices):
 class PushAccountActionChoice(models.TextChoices):
     create_and_push = 'create_and_push', _('Create and push')
     only_create = 'only_create', _('Only create')
+
+
+class AccountBackupType(models.TextChoices):
+    """Backup type"""
+    email = 'email', _('Email')
+    # 目前只支持sftp方式
+    object_storage = 'object_storage', _('SFTP')
+
+
+class ChangeSecretRecordStatusChoice(models.TextChoices):
+    failed = 'failed', _('Failed')
+    success = 'success', _('Success')
+    pending = 'pending', _('Pending')

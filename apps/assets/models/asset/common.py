@@ -13,7 +13,9 @@ from django.utils.translation import gettext_lazy as _
 from assets import const
 from common.db.fields import EncryptMixin
 from common.utils import lazyproperty
+from labels.mixins import LabeledMixin
 from orgs.mixins.models import OrgManager, JMSOrgBaseModel
+from rbac.models import ContentType
 from ..base import AbsConnectivity
 from ..platform import Platform
 
@@ -35,6 +37,13 @@ class AssetQuerySet(models.QuerySet):
 
     def valid(self):
         return self.active()
+
+    def gateways(self, is_gateway=1):
+        kwargs = {'platform__name__startswith': 'Gateway'}
+        if is_gateway:
+            return self.filter(**kwargs)
+        else:
+            return self.exclude(**kwargs)
 
     def has_protocol(self, name):
         return self.filter(protocols__contains=name)
@@ -131,8 +140,16 @@ class JSONFilterMixin:
             value = [value]
         if name == 'nodes':
             nodes = Node.objects.filter(id__in=value)
-            children = Node.get_nodes_all_children(nodes, with_self=True).values_list('id', flat=True)
-            return Q(nodes__in=children)
+            if match == 'm2m_all':
+                assets = Asset.objects.all()
+                for n in nodes:
+                    children_pattern = Node.get_node_all_children_key_pattern(n.key)
+                    assets = assets.filter(nodes__key__regex=children_pattern)
+                q = Q(id__in=assets.values_list('id', flat=True))
+                return q
+            else:
+                children = Node.get_nodes_all_children(nodes, with_self=True).values_list('id', flat=True)
+                return Q(nodes__in=children)
         elif name == 'category':
             return Q(platform__category__in=value)
         elif name == 'type':
@@ -142,19 +159,23 @@ class JSONFilterMixin:
         return None
 
 
-class Asset(NodesRelationMixin, AbsConnectivity, JSONFilterMixin, JMSOrgBaseModel):
+class Asset(NodesRelationMixin, LabeledMixin, AbsConnectivity, JSONFilterMixin, JMSOrgBaseModel):
     Category = const.Category
     Type = const.AllTypes
 
     name = models.CharField(max_length=128, verbose_name=_('Name'))
     address = models.CharField(max_length=767, verbose_name=_('Address'), db_index=True)
-    platform = models.ForeignKey(Platform, on_delete=models.PROTECT, verbose_name=_("Platform"), related_name='assets')
-    domain = models.ForeignKey("assets.Domain", null=True, blank=True, related_name='assets',
-                               verbose_name=_("Domain"), on_delete=models.SET_NULL)
-    nodes = models.ManyToManyField('assets.Node', default=default_node, related_name='assets',
-                                   verbose_name=_("Nodes"))
-    is_active = models.BooleanField(default=True, verbose_name=_('Is active'))
-    labels = models.ManyToManyField('assets.Label', blank=True, related_name='assets', verbose_name=_("Labels"))
+    platform = models.ForeignKey(
+        Platform, on_delete=models.PROTECT, verbose_name=_("Platform"), related_name='assets'
+    )
+    domain = models.ForeignKey(
+        "assets.Domain", null=True, blank=True, related_name='assets',
+        verbose_name=_("Zone"), on_delete=models.SET_NULL
+    )
+    nodes = models.ManyToManyField(
+        'assets.Node', default=default_node, related_name='assets', verbose_name=_("Nodes")
+    )
+    is_active = models.BooleanField(default=True, verbose_name=_('Active'))
     gathered_info = models.JSONField(verbose_name=_('Gathered info'), default=dict, blank=True)  # 资产的一些信息，如 硬件信息
     custom_info = models.JSONField(verbose_name=_('Custom info'), default=dict)
 
@@ -162,6 +183,13 @@ class Asset(NodesRelationMixin, AbsConnectivity, JSONFilterMixin, JMSOrgBaseMode
 
     def __str__(self):
         return '{0.name}({0.address})'.format(self)
+
+    def get_labels(self):
+        from labels.models import Label, LabeledResource
+        res_type = ContentType.objects.get_for_model(self.__class__.label_model())
+        label_ids = LabeledResource.objects.filter(res_type=res_type, res_id=self.id) \
+            .values_list('label_id', flat=True)
+        return Label.objects.filter(id__in=label_ids)
 
     @staticmethod
     def get_spec_values(instance, fields):
@@ -332,7 +360,7 @@ class Asset(NodesRelationMixin, AbsConnectivity, JSONFilterMixin, JMSOrgBaseMode
     class Meta:
         unique_together = [('org_id', 'name')]
         verbose_name = _("Asset")
-        ordering = ["name", ]
+        ordering = []
         permissions = [
             ('refresh_assethardwareinfo', _('Can refresh asset hardware info')),
             ('test_assetconnectivity', _('Can test asset connectivity')),

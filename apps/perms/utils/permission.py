@@ -1,8 +1,7 @@
 from django.db.models import QuerySet
 
 from assets.models import Node, Asset
-from common.utils import get_logger
-
+from common.utils import get_logger, timeit
 from perms.models import AssetPermission
 
 logger = get_logger(__file__)
@@ -13,7 +12,8 @@ __all__ = ['AssetPermissionUtil']
 class AssetPermissionUtil(object):
     """ 资产授权相关的方法工具 """
 
-    def get_permissions_for_user(self, user, with_group=True, flat=False):
+    @timeit
+    def get_permissions_for_user(self, user, with_group=True, flat=False, with_expired=False):
         """ 获取用户的授权规则 """
         perm_ids = set()
         # user
@@ -23,14 +23,14 @@ class AssetPermissionUtil(object):
         # group
         if with_group:
             groups = user.groups.all()
-            group_perm_ids = self.get_permissions_for_user_groups(groups, flat=True)
+            group_perm_ids = self.get_permissions_for_user_groups(groups, flat=True, with_expired=with_expired)
             perm_ids.update(group_perm_ids)
-        perms = self.get_permissions(ids=perm_ids)
+        perms = self.get_permissions(ids=perm_ids, with_expired=with_expired)
         if flat:
             return perms.values_list('id', flat=True)
         return perms
 
-    def get_permissions_for_user_groups(self, user_groups, flat=False):
+    def get_permissions_for_user_groups(self, user_groups, flat=False, with_expired=False):
         """ 获取用户组的授权规则 """
         if isinstance(user_groups, list):
             group_ids = [g.id for g in user_groups]
@@ -39,7 +39,7 @@ class AssetPermissionUtil(object):
         perm_ids = AssetPermission.user_groups.through.objects \
             .filter(usergroup_id__in=group_ids) \
             .values_list('assetpermission_id', flat=True).distinct()
-        perms = self.get_permissions(ids=perm_ids)
+        perms = self.get_permissions(ids=perm_ids, with_expired=with_expired)
         if flat:
             return perms.values_list('id', flat=True)
         return perms
@@ -102,6 +102,8 @@ class AssetPermissionUtil(object):
         return model.objects.filter(id__in=ids)
 
     @staticmethod
-    def get_permissions(ids):
-        perms = AssetPermission.objects.filter(id__in=ids).valid().order_by('-date_expired')
-        return perms
+    def get_permissions(ids, with_expired=False):
+        perms = AssetPermission.objects.filter(id__in=ids)
+        if not with_expired:
+            perms = perms.valid()
+        return perms.order_by('-date_expired')

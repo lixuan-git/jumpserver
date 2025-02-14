@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 #
-
 from importlib import import_module
 
 from django.conf import settings
 from django.db.models import F, Value, CharField, Q
+from django.db.models.functions import Cast
 from django.http import HttpResponse, FileResponse
-from django.utils import timezone
 from django.utils.encoding import escape_uri_path
+from django_celery_beat.models import PeriodicTask
 from rest_framework import generics
 from rest_framework import status
 from rest_framework import viewsets
@@ -20,8 +20,12 @@ from common.const.http import GET, POST
 from common.drf.filters import DatetimeRangeFilterBackend
 from common.permissions import IsServiceAccount
 from common.plugins.es import QuerySet as ESQuerySet
+from common.sessions.cache import user_session_manager
 from common.storage.ftp_file import FTPFileStorageHandler
 from common.utils import is_uuid, get_logger, lazyproperty
+from ops.const import Types
+from ops.models import Job
+from ops.serializers.job import JobSerializer
 from orgs.mixins.api import OrgReadonlyModelViewSet, OrgModelViewSet
 from orgs.models import Organization
 from orgs.utils import current_org, tmp_to_root_org
@@ -30,6 +34,7 @@ from terminal.models import default_storage
 from users.models import User
 from .backends import TYPE_ENGINE_MAPPING
 from .const import ActivityChoices
+from .filters import UserSessionFilterSet, OperateLogFilterSet
 from .models import (
     FTPLog, UserLoginLog, OperateLog, PasswordChangeLog,
     ActivityLog, JobLog, UserSession
@@ -38,13 +43,14 @@ from .serializers import (
     FTPLogSerializer, UserLoginLogSerializer, JobLogSerializer,
     OperateLogSerializer, OperateLogActionDetailSerializer,
     PasswordChangeLogSerializer, ActivityUnionLogSerializer,
-    FileSerializer, UserSessionSerializer
+    FileSerializer, UserSessionSerializer, JobsAuditSerializer
 )
+from .utils import construct_userlogin_usernames
 
 logger = get_logger(__name__)
 
 
-class JobAuditViewSet(OrgReadonlyModelViewSet):
+class JobLogAuditViewSet(OrgReadonlyModelViewSet):
     model = JobLog
     extra_filter_backends = [DatetimeRangeFilterBackend]
     date_range_filter_fields = [
@@ -56,6 +62,35 @@ class JobAuditViewSet(OrgReadonlyModelViewSet):
     ordering = ['-date_start']
 
 
+class JobsAuditViewSet(OrgModelViewSet):
+    model = Job
+    search_fields = ['creator__name']
+    filterset_fields = ['creator__name']
+    serializer_class = JobsAuditSerializer
+    ordering = ['-is_periodic', '-date_updated']
+    http_method_names = ['get', 'options', 'patch']
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        queryset = queryset.exclude(type=Types.upload_file).filter(instant=False)
+        return queryset
+
+    def perform_update(self, serializer):
+        job = self.get_object()
+        is_periodic = serializer.validated_data.get('is_periodic')
+        if job.is_periodic != is_periodic:
+            job.is_periodic = is_periodic
+            job.save()
+        name, task, args, kwargs = job.get_register_task()
+        task_obj = PeriodicTask.objects.filter(name=name).first()
+        if task_obj:
+            is_periodic = job.is_periodic
+            if task_obj.enabled != is_periodic:
+                task_obj.enabled = is_periodic
+                task_obj.save()
+        return super().perform_update(serializer)
+
+
 class FTPLogViewSet(OrgModelViewSet):
     model = FTPLog
     serializer_class = FTPLogSerializer
@@ -63,7 +98,7 @@ class FTPLogViewSet(OrgModelViewSet):
     date_range_filter_fields = [
         ('date_start', ('date_from', 'date_to'))
     ]
-    filterset_fields = ['user', 'asset', 'account', 'filename']
+    filterset_fields = ['user', 'asset', 'account', 'filename', 'session']
     search_fields = filterset_fields
     ordering = ['-date_start']
     http_method_names = ['post', 'get', 'head', 'options', 'patch']
@@ -125,15 +160,16 @@ class UserLoginCommonMixin:
 
 class UserLoginLogViewSet(UserLoginCommonMixin, OrgReadonlyModelViewSet):
     @staticmethod
-    def get_org_members():
-        users = current_org.get_members().values_list('username', flat=True)
+    def get_org_member_usernames():
+        user_queryset = current_org.get_members()
+        users = construct_userlogin_usernames(user_queryset)
         return users
 
     def get_queryset(self):
         queryset = super().get_queryset()
         if current_org.is_root():
             return queryset
-        users = self.get_org_members()
+        users = self.get_org_member_usernames()
         queryset = queryset.filter(username__in=users)
         return queryset
 
@@ -143,7 +179,9 @@ class MyLoginLogViewSet(UserLoginCommonMixin, OrgReadonlyModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        qs = qs.filter(username=self.request.user.username)
+        username = self.request.user.username
+        q = Q(username=username) | Q(username__icontains=f'({username})')
+        qs = qs.filter(q)
         return qs
 
 
@@ -163,7 +201,7 @@ class ResourceActivityAPIView(generics.ListAPIView):
             q |= Q(user=str(user))
         queryset = OperateLog.objects.filter(q, org_q).annotate(
             r_type=Value(ActivityChoices.operate_log, CharField()),
-            r_detail_id=F('id'), r_detail=Value(None, CharField()),
+            r_detail_id=Cast(F('id'), CharField()), r_detail=Value(None, CharField()),
             r_user=F('user'), r_action=F('action'),
         ).values(*fields)[:limit]
         return queryset
@@ -184,7 +222,13 @@ class ResourceActivityAPIView(generics.ListAPIView):
             'id', 'datetime', 'r_detail', 'r_detail_id',
             'r_user', 'r_action', 'r_type'
         )
-        org_q = Q(org_id=Organization.SYSTEM_ID) | Q(org_id=current_org.id)
+
+        org_q = Q()
+        if not current_org.is_root():
+            org_q = Q(org_id=Organization.SYSTEM_ID) | Q(org_id=current_org.id)
+            if resource_id:
+                org_q |= Q(org_id='') | Q(org_id=Organization.ROOT_ID)
+
         with tmp_to_root_org():
             qs1 = self.get_operate_log_qs(fields, limit, org_q, resource_id=resource_id)
             qs2 = self.get_activity_log_qs(fields, limit, org_q, resource_id=resource_id)
@@ -199,10 +243,7 @@ class OperateLogViewSet(OrgReadonlyModelViewSet):
     date_range_filter_fields = [
         ('datetime', ('date_from', 'date_to'))
     ]
-    filterset_fields = [
-        'user', 'action', 'resource_type', 'resource',
-        'remote_addr'
-    ]
+    filterset_class = OperateLogFilterSet
     search_fields = ['resource', 'user']
     ordering = ['-datetime']
 
@@ -216,11 +257,10 @@ class OperateLogViewSet(OrgReadonlyModelViewSet):
         return super().get_serializer_class()
 
     def get_queryset(self):
-        org_q = Q(org_id=current_org.id)
+        qs = OperateLog.objects.all()
         if self.is_action_detail:
-            org_q |= Q(org_id=Organization.SYSTEM_ID)
-        with tmp_to_root_org():
-            qs = OperateLog.objects.filter(org_q)
+            with tmp_to_root_org():
+                qs |= OperateLog.objects.filter(org_id=Organization.SYSTEM_ID)
         es_config = settings.OPERATE_LOG_ELASTICSEARCH_CONFIG
         if es_config:
             engine_mod = import_module(TYPE_ENGINE_MAPPING['es'])
@@ -255,11 +295,10 @@ class PasswordChangeLogViewSet(OrgReadonlyModelViewSet):
 class UserSessionViewSet(CommonApiMixin, viewsets.ModelViewSet):
     http_method_names = ('get', 'post', 'head', 'options', 'trace')
     serializer_class = UserSessionSerializer
-    filterset_fields = ['id', 'ip', 'city', 'type']
+    filterset_class = UserSessionFilterSet
     search_fields = ['id', 'ip', 'city']
-
     rbac_perms = {
-        'offline': ['users.offline_usersession']
+        'offline': ['audits.offline_usersession']
     }
 
     @property
@@ -268,10 +307,8 @@ class UserSessionViewSet(CommonApiMixin, viewsets.ModelViewSet):
         return user_ids
 
     def get_queryset(self):
-        keys = UserSession.get_keys()
-        queryset = UserSession.objects.filter(
-            date_expired__gt=timezone.now(), key__in=keys
-        )
+        keys = user_session_manager.get_keys()
+        queryset = UserSession.objects.filter(key__in=keys)
         if current_org.is_root():
             return queryset
         user_ids = self.org_user_ids
@@ -281,13 +318,14 @@ class UserSessionViewSet(CommonApiMixin, viewsets.ModelViewSet):
     @action(['POST'], detail=False, url_path='offline')
     def offline(self, request, *args, **kwargs):
         ids = request.data.get('ids', [])
-        queryset = self.get_queryset().exclude(key=request.session.session_key).filter(id__in=ids)
+        queryset = self.get_queryset()
+        session_key = request.session.session_key
+        queryset = queryset.exclude(key=session_key).filter(id__in=ids)
         if not queryset.exists():
             return Response(status=status.HTTP_200_OK)
 
         keys = queryset.values_list('key', flat=True)
-        session_store_cls = import_module(settings.SESSION_ENGINE).SessionStore
         for key in keys:
-            session_store_cls(key).delete()
+            user_session_manager.remove(key)
         queryset.delete()
         return Response(status=status.HTTP_200_OK)

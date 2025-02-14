@@ -1,14 +1,14 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
-from assets.const import AllTypes
-from assets.const import Protocol
+from assets.const import AllTypes, Category, Protocol, SuMethodChoices
 from common.db.fields import JsonDictTextField
 from common.db.models import JMSBaseModel
 
 __all__ = ['Platform', 'PlatformProtocol', 'PlatformAutomation']
 
 from common.utils import lazyproperty
+from labels.mixins import LabeledMixin
 
 
 class PlatformProtocol(models.Model):
@@ -71,10 +71,16 @@ class PlatformAutomation(models.Model):
         max_length=32, blank=True, null=True, verbose_name=_("Gather facts method")
     )
     gather_accounts_params = models.JSONField(default=dict, verbose_name=_("Gather facts params"))
+
+    remove_account_enabled = models.BooleanField(default=False, verbose_name=_("Remove account enabled"))
+    remove_account_method = models.TextField(
+        max_length=32, blank=True, null=True, verbose_name=_("Remove account method")
+    )
+    remove_account_params = models.JSONField(default=dict, verbose_name=_("Remove account params"))
     platform = models.OneToOneField('Platform', on_delete=models.CASCADE, related_name='automation', null=True)
 
 
-class Platform(JMSBaseModel):
+class Platform(LabeledMixin, JMSBaseModel):
     """
     对资产提供 约束和默认值
     对资产进行抽象
@@ -95,7 +101,7 @@ class Platform(JMSBaseModel):
         default=CharsetChoices.utf8, choices=CharsetChoices.choices,
         max_length=8, verbose_name=_("Charset")
     )
-    domain_enabled = models.BooleanField(default=True, verbose_name=_("Domain enabled"))
+    domain_enabled = models.BooleanField(default=True, verbose_name=_("Gateway enabled"))
     # 账号有关的
     su_enabled = models.BooleanField(default=False, verbose_name=_("Su enabled"))
     su_method = models.CharField(max_length=32, blank=True, null=True, verbose_name=_("Su method"))
@@ -105,12 +111,36 @@ class Platform(JMSBaseModel):
     def type_constraints(self):
         return AllTypes.get_constraints(self.category, self.type)
 
+    @lazyproperty
+    def assets_amount(self):
+        return self.assets.count()
+
     @classmethod
     def default(cls):
         linux, created = cls.objects.get_or_create(
             defaults={'name': 'Linux'}, name='Linux'
         )
         return linux.id
+
+    def is_huawei(self):
+        if self.category != Category.DEVICE:
+            return False
+        if 'huawei' in self.name.lower():
+            return True
+        if '华为' in self.name:
+            return True
+        return False
+
+    @property
+    def ansible_become_method(self):
+        su_method = self.su_method or SuMethodChoices.sudo
+        if su_method in [SuMethodChoices.sudo, SuMethodChoices.only_sudo]:
+            method = SuMethodChoices.sudo
+        elif su_method in [SuMethodChoices.su, SuMethodChoices.only_su]:
+            method = SuMethodChoices.su
+        else:
+            method = su_method
+        return method
 
     def __str__(self):
         return self.name

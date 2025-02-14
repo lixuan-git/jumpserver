@@ -33,7 +33,7 @@ class AutomationExecution(AssetAutomationExecution):
         verbose_name_plural = _("Automation executions")
         permissions = [
             ('view_changesecretexecution', _('Can view change secret execution')),
-            ('add_changesecretexection', _('Can add change secret execution')),
+            ('add_changesecretexecution', _('Can add change secret execution')),
 
             ('view_gatheraccountsexecution', _('Can view gather accounts execution')),
             ('add_gatheraccountsexecution', _('Can add gather accounts execution')),
@@ -51,7 +51,7 @@ class AutomationExecution(AssetAutomationExecution):
 class ChangeSecretMixin(SecretWithRandomMixin):
     ssh_key_change_strategy = models.CharField(
         choices=SSHKeyStrategy.choices, max_length=16,
-        default=SSHKeyStrategy.add, verbose_name=_('SSH key change strategy')
+        default=SSHKeyStrategy.set_jms, verbose_name=_('SSH key change strategy')
     )
     get_all_assets: callable  # get all assets
 

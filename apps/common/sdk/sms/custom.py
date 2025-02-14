@@ -30,7 +30,7 @@ class CustomSMS(BaseSMSClient):
                 code=template_param.get('code'), phone_numbers=phone_numbers_str
             )
 
-        logger.info(f'Custom sms send: phone_numbers={phone_numbers}param={params}')
+        logger.info(f'Custom sms send: phone_numbers={phone_numbers}, param={params}')
         if settings.CUSTOM_SMS_REQUEST_METHOD == 'post':
             action = requests.post
             kwargs = {'json': params}
@@ -39,10 +39,10 @@ class CustomSMS(BaseSMSClient):
             kwargs = {'params': params}
         try:
             response = action(url=settings.CUSTOM_SMS_URL, verify=False, **kwargs)
-            if response.reason != 'OK':
-                raise JMSException(detail=response.text, code=response.status_code)
+            response.raise_for_status()
         except Exception as exc:
             logger.error('Custom sms error: {}'.format(exc))
+            raise JMSException(exc)
 
 
 client = CustomSMS

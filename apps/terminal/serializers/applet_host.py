@@ -15,14 +15,14 @@ from ..models import AppletHost, AppletHostDeployment
 __all__ = [
     'AppletHostSerializer', 'AppletHostDeploymentSerializer',
     'AppletHostAccountSerializer', 'AppletHostAppletReportSerializer',
-    'AppletHostStartupSerializer'
+    'AppletHostStartupSerializer', 'AppletSetupSerializer'
 ]
 
 
 class DeployOptionsSerializer(serializers.Serializer):
     LICENSE_MODE_CHOICES = (
-        (4, _('Per Session')),
-        (2, _('Per Device')),
+        (2, _('Per Device (Device number limit)')),
+        (4, _('Per User (User number limit)')),
     )
 
     # 单用户单会话，
@@ -44,13 +44,37 @@ class DeployOptionsSerializer(serializers.Serializer):
         """)
     )
     IGNORE_VERIFY_CERTS = serializers.BooleanField(default=True, label=_("Ignore Certificate Verification"))
-    RDS_Licensing = serializers.BooleanField(default=False, label=_("Existing RDS license"))
+    RDS_Licensing = serializers.BooleanField(
+        default=False, label=_("Existing RDS license"),
+        help_text=_(
+            'If not exist, the RDS will be in trial mode, and the trial period is 120 days. <a '
+            'href="https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/rds-client-access'
+            '-license">Detail</a>'
+        )
+    )
     RDS_LicenseServer = serializers.CharField(default='127.0.0.1', label=_('RDS License Server'), max_length=1024)
-    RDS_LicensingMode = serializers.ChoiceField(choices=LICENSE_MODE_CHOICES, default=2, label=_('RDS Licensing Mode'))
-    RDS_fSingleSessionPerUser = serializers.ChoiceField(choices=SESSION_PER_USER, default=1,
-                                                        label=_("RDS Single Session Per User"))
-    RDS_MaxDisconnectionTime = serializers.IntegerField(default=60000, label=_("RDS Max Disconnection Time"))
-    RDS_RemoteAppLogoffTimeLimit = serializers.IntegerField(default=0, label=_("RDS Remote App Logoff Time Limit"))
+    RDS_LicensingMode = serializers.ChoiceField(
+        choices=LICENSE_MODE_CHOICES, default=2, label=_('RDS Licensing Mode'),
+    )
+    RDS_fSingleSessionPerUser = serializers.ChoiceField(
+        choices=SESSION_PER_USER, default=1, label=_("RDS Single Session Per User"),
+        help_text=_('Tips: A RDS user can have only one session at a time. If set, when next login connected, '
+                    'previous session will be disconnected.')
+    )
+    RDS_MaxDisconnectionTime = serializers.IntegerField(
+        default=60000, label=_("RDS Max Disconnection Time (ms)"),
+        help_text=_(
+            'Tips: Set the maximum duration for keeping a disconnected session active on the server (log off the '
+            'session after 60000 milliseconds).'
+        )
+    )
+    RDS_RemoteAppLogoffTimeLimit = serializers.IntegerField(
+        default=0, label=_("RDS Remote App Logoff Time Limit (ms)"),
+        help_text=_(
+            'Tips: Set the logoff time for RemoteApp sessions after closing all RemoteApp programs (0 milliseconds, '
+            'log off the session immediately).'
+        )
+    )
 
 
 class AppletHostSerializer(HostSerializer):
@@ -63,18 +87,27 @@ class AppletHostSerializer(HostSerializer):
         model = AppletHost
         fields = HostSerializer.Meta.fields + [
             'auto_create_accounts', 'accounts_create_amount',
-            'load', 'date_synced', 'deploy_options'
+            'load', 'date_synced', 'deploy_options', 'using_same_account',
         ]
         extra_kwargs = {
             **HostSerializer.Meta.extra_kwargs,
             'date_synced': {'read_only': True},
-            'auto_create_accounts': {'help_text': _(
-                'These accounts are used to connect to the published application, '
-                'the account is now divided into two types, one is dedicated to each account, '
-                'each user has a private account, the other is public, '
-                'when the application does not support multiple open and the special has been used, '
-                'the public account will be used to connect')},
+            'auto_create_accounts': {
+                'help_text': _(
+                    'These accounts are used to connect to the published application, '
+                    'the account is now divided into two types, one is dedicated to each account, '
+                    'each user has a private account, the other is public, '
+                    'when the application does not support multiple open and the special has been used, '
+                    'the public account will be used to connect'
+                )
+            },
             'accounts_create_amount': {'help_text': _('The number of public accounts created automatically')},
+            'using_same_account': {
+                'help_text': _(
+                    'Connect to the host using the same account first. For security reasons, please set the '
+                    'configuration item CACHE_LOGIN_PASSWORD_ENABLED=true and restart the service to enable it.'
+                )
+            }
         }
 
     def __init__(self, *args, data=None, **kwargs):
@@ -113,6 +146,7 @@ class HostAppletSerializer(AppletSerializer):
 
 class AppletHostDeploymentSerializer(serializers.ModelSerializer):
     status = LabeledChoiceField(choices=Status.choices, label=_('Status'), default=Status.pending)
+    install_applets = serializers.BooleanField(default=True, label=_('Install applets'), write_only=True)
 
     class Meta:
         model = AppletHostDeployment
@@ -121,7 +155,8 @@ class AppletHostDeploymentSerializer(serializers.ModelSerializer):
             'status', 'date_created', 'date_updated',
             'date_start', 'date_finished'
         ]
-        fields = fields_mini + ['comment'] + read_only_fields
+        write_only_fields = ['install_applets', ]
+        fields = fields_mini + ['comment'] + read_only_fields + write_only_fields
 
 
 class AppletHostAccountSerializer(serializers.ModelSerializer):
@@ -138,3 +173,8 @@ class AppletHostAppletReportSerializer(serializers.Serializer):
 
 class AppletHostStartupSerializer(serializers.Serializer):
     pass
+
+
+class AppletSetupSerializer(serializers.Serializer):
+    hosts = serializers.ListField(child=serializers.UUIDField(label=_('Host ID')), label=_('Hosts'))
+    applet_id = serializers.UUIDField(label=_('Applet ID'))

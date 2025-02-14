@@ -33,6 +33,21 @@ class RDPClientOption(TextChoices):
     DRIVES_REDIRECT = 'drives_redirect', _('Drives redirect')
 
 
+class ConnectDefaultOpenMethod(TextChoices):
+    CURRENT = 'current', _('Current window')
+    NEW = 'new', _('New window')
+
+
+class RDPSmartSize(TextChoices):
+    DISABLE = '0', _('Disable')
+    ENABLE = '1', _('Enable')
+
+
+class RDPColorQuality(TextChoices):
+    HIGH = '32', _('High（32 bit）')
+    MEDIUM = '16', _('Medium（16 bit）')
+
+
 class KeyboardLayout(TextChoices):
     EN_US_QWERTY = 'en-us-qwerty', 'US English (Qwerty)'
     EN_UK_QWERTY = 'en-gb-qwerty', 'UK English (Qwerty)'
@@ -41,6 +56,20 @@ class KeyboardLayout(TextChoices):
     FR_CH_QWERTZ = 'fr-ch-qwertz', 'Swiss French (Qwertz)'
     FR_BE_AZERTY = 'fr-be-azerty', 'Belgian French (Azerty)'
     TR_TR_QWERTY = 'tr-tr-qwerty', 'Turkish-Q (Qwerty)'
+    ES_ES_QWERTY = 'es-es-qwerty', 'Spanish'
+    ES_LATAM_QWERTY = 'es-latam-qwerty', 'Spanish (Latin American)'
+    DE_DE_QWERTZ = 'de-de-qwertz', 'German (Qwertz)'
+    DE_CH_QWERTZ = 'de-ch-qwertz', 'Swiss German (Qwertz)'
+    SV_SE_QWERTY = 'sv-se-qwerty', 'Swedish (Qwerty)'
+    IT_IT_QWERTY = 'it-it-qwerty', 'Italian (Qwerty)'
+    PT_PT_QWERTY = 'pt-pt-qwerty', 'Portuguese (Qwerty)'
+    PT_BR_QWERTY = 'pt-br-qwerty', 'Portuguese Brazilian (Qwerty)'
+    PL_PL_QWERTY = 'pl-pl-qwerty', 'Polish (Qwerty)'
+    HU_HU_QWERTZ = 'hu-hu-qwertz', 'Hungarian (Qwertz)'
+    NO_NO_QWERTY = 'no-no-qwerty', 'Norwegian (Qwerty)'
+    RO_RO_QWERTY = 'ro-ro-qwerty', 'Romanian (Qwerty)'
+    DA_DK_QWERTY = 'da-dk-qwerty', 'Danish (Qwerty)'
+    FR_CA_QWERTY = 'fr-ca-qwerty', 'Canadian French (Qwerty)'
 
 
 class AppletConnectionMethod(TextChoices):

@@ -13,9 +13,12 @@ from collections import OrderedDict
 from functools import wraps
 from itertools import chain
 
+import html2text
 import psutil
 from django.conf import settings
 from django.templatetags.static import static
+
+from common.permissions import ServiceAccountSignaturePermission
 
 UUID_PATTERN = re.compile(r'\w{8}(-\w{4}){3}-\w{12}')
 ipip_db = None
@@ -154,18 +157,24 @@ def is_uuid(seq):
 
 def get_request_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '').split(',')
-
     if x_forwarded_for and x_forwarded_for[0]:
         login_ip = x_forwarded_for[0]
-    else:
-        login_ip = request.META.get('REMOTE_ADDR', '')
+        if login_ip.count(':') == 1:
+            # format: ipv4:port (非标准格式的 X-Forwarded-For)
+            login_ip = login_ip.split(":")[0]
+        return login_ip
+
+    login_ip = request.META.get('REMOTE_ADDR', '')
     return login_ip
 
 
 def get_request_ip_or_data(request):
     ip = ''
-    if hasattr(request, 'data'):
-        ip = request.data.get('remote_addr', '')
+
+    if hasattr(request, 'data') and isinstance(request.data, dict) and request.data.get('remote_addr', ''):
+        permission = ServiceAccountSignaturePermission()
+        if permission.has_permission(request, None):
+            ip = request.data.get('remote_addr', '')
     ip = ip or get_request_ip(request)
     return ip
 
@@ -215,7 +224,7 @@ def timeit(func):
         now = time.time()
         result = func(*args, **kwargs)
         using = (time.time() - now) * 1000
-        msg = "End call {}, using: {:.1f}ms".format(name, using)
+        msg = "Ends  call: {}, using: {:.1f}ms".format(name, using)
         logger.debug(msg)
         return result
 
@@ -287,7 +296,7 @@ def get_docker_mem_usage_if_limit():
             inactive_file = int(inactive_file)
         return ((usage_in_bytes - inactive_file) / limit_in_bytes) * 100
 
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -412,3 +421,18 @@ def distinct(seq, key=None):
             seen.add(k)
             result.append(item)
     return result
+
+
+def is_macos():
+    return platform.system() == 'Darwin'
+
+
+def convert_html_to_markdown(html_str):
+    h = html2text.HTML2Text()
+    h.body_width = 0
+    h.ignore_links = False
+
+    markdown = h.handle(html_str)
+    markdown = markdown.replace('\n\n', '\n')
+    markdown = markdown.replace('\n ', '\n')
+    return markdown

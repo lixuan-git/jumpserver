@@ -3,6 +3,7 @@ from channels.db import database_sync_to_async
 from channels.routing import ProtocolTypeRouter, URLRouter
 from django.core.asgi import get_asgi_application
 from django.core.handlers.asgi import ASGIRequest
+from django.conf import settings
 
 from authentication.backends.drf import (
     SignatureAuthentication,
@@ -20,6 +21,10 @@ urlpatterns = ops_urlpatterns + \
               setting_urlpatterns + \
               terminal_urlpatterns
 
+if settings.XPACK_ENABLED:
+    from xpack.plugins.cloud.urls.ws_urls import urlpatterns as xcloud_urlpatterns
+    urlpatterns += xcloud_urlpatterns
+
 
 @database_sync_to_async
 def get_signature_user(scope):
@@ -28,17 +33,17 @@ def get_signature_user(scope):
         return
     if scope['type'] == 'websocket':
         scope['method'] = 'GET'
-    try:
-        # 因为 ws 使用的是 scope，所以需要转换成 request 对象，用于认证校验
-        request = ASGIRequest(scope, None)
-        backends = [SignatureAuthentication(),
-                    AccessTokenAuthentication()]
-        for backend in backends:
+    # 因为 ws 使用的是 scope，所以需要转换成 request 对象，用于认证校验
+    request = ASGIRequest(scope, None)
+    backends = [SignatureAuthentication(),
+                AccessTokenAuthentication()]
+    for backend in backends:
+        try:
             user, _ = backend.authenticate(request)
             if user:
                 return user
-    except Exception as e:
-        print(e)
+        except Exception as e:
+            print(e)
     return None
 
 

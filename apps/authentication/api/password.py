@@ -1,3 +1,6 @@
+import time
+
+from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpResponseRedirect
 from django.shortcuts import reverse
@@ -7,18 +10,17 @@ from rest_framework.generics import CreateAPIView
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from authentication.errors import PasswordInvalid
+from authentication.errors import PasswordInvalid, IntervalTooShort
 from authentication.mixins import AuthMixin
 from authentication.mixins import authenticate
 from authentication.serializers import (
     PasswordVerifySerializer, ResetPasswordCodeSerializer
 )
+from authentication.utils import check_user_property_is_correct
 from common.permissions import IsValidUser
-from common.utils import get_object_or_none
 from common.utils.random import random_string
 from common.utils.verify_code import SendAndVerifyCodeUtil
 from settings.utils import get_login_title
-from users.models import User
 
 
 class UserResetPasswordSendCodeApi(CreateAPIView):
@@ -26,8 +28,8 @@ class UserResetPasswordSendCodeApi(CreateAPIView):
     serializer_class = ResetPasswordCodeSerializer
 
     @staticmethod
-    def is_valid_user(**kwargs):
-        user = get_object_or_none(User, **kwargs)
+    def is_valid_user(username, **properties):
+        user = check_user_property_is_correct(username, **properties)
         if not user:
             err_msg = _('User does not exist: {}').format(_("No user matched"))
             return None, err_msg
@@ -38,36 +40,53 @@ class UserResetPasswordSendCodeApi(CreateAPIView):
             return None, err_msg
         return user, None
 
-    def create(self, request, *args, **kwargs):
-        token = request.GET.get('token')
-        userinfo = cache.get(token)
-        if not userinfo:
-            return HttpResponseRedirect(reverse('authentication:forgot-previewing'))
+    @staticmethod
+    def safe_send_code(token, code, target, form_type, content, user_info):
+        token_sent_key = '{}_send_at'.format(token)
+        token_send_at = cache.get(token_sent_key, 0)
+        if token_send_at:
+            raise IntervalTooShort(60)
+        tooler = SendAndVerifyCodeUtil(
+            target, code, backend=form_type, user_info=user_info, **content
+        )
+        tooler.gen_and_send_async()
+        cache.set(token_sent_key, int(time.time()), 60)
 
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        username = userinfo.get('username')
+    def prepare_code_data(self, user_info, serializer):
+        username = user_info.get('username')
         form_type = serializer.validated_data['form_type']
-        code = random_string(6, lower=False, upper=False)
-        other_args = {}
 
         target = serializer.validated_data[form_type]
         if form_type == 'sms':
             query_key = 'phone'
-            target = target.lstrip('+')
         else:
             query_key = form_type
         user, err = self.is_valid_user(username=username, **{query_key: target})
         if not user:
-            return Response({'error': err}, status=400)
+            raise ValueError(err)
 
+        code = random_string(settings.SMS_CODE_LENGTH, lower=False, upper=False)
         subject = '%s: %s' % (get_login_title(), _('Forgot password'))
         context = {
             'user': user, 'title': subject, 'code': code,
         }
         message = render_to_string('authentication/_msg_reset_password_code.html', context)
-        other_args['subject'], other_args['message'] = subject, message
-        SendAndVerifyCodeUtil(target, code, backend=form_type, **other_args).gen_and_send_async()
+        content = {'subject': subject, 'message': message}
+        return code, target, form_type, content
+
+    def create(self, request, *args, **kwargs):
+        token = request.GET.get('token')
+        user_info = cache.get(token)
+        if not user_info:
+            return HttpResponseRedirect(reverse('authentication:forgot-previewing'))
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            code, target, form_type, content = self.prepare_code_data(user_info, serializer)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=400)
+        self.safe_send_code(token, code, target, form_type, content, user_info)
         return Response({'data': 'ok'}, status=200)
 
 

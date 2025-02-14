@@ -10,16 +10,22 @@ from assets.tasks import execute_asset_automation_task
 from common.const.choices import Trigger
 from common.db.fields import EncryptJsonDictTextField
 from ops.mixin import PeriodTaskModelMixin
-from orgs.mixins.models import OrgModelMixin, JMSOrgBaseModel
+from orgs.mixins.models import OrgModelMixin, JMSOrgBaseModel, OrgManager
+
+
+class BaseAutomationManager(OrgManager):
+    pass
 
 
 class BaseAutomation(PeriodTaskModelMixin, JMSOrgBaseModel):
     accounts = models.JSONField(default=list, verbose_name=_("Accounts"))
-    nodes = models.ManyToManyField('assets.Node', blank=True, verbose_name=_("Nodes"))
+    nodes = models.ManyToManyField('assets.Node', blank=True, verbose_name=_("Node"))
     assets = models.ManyToManyField('assets.Asset', blank=True, verbose_name=_("Assets"))
     type = models.CharField(max_length=16, verbose_name=_('Type'))
     is_active = models.BooleanField(default=True, verbose_name=_("Is active"))
     params = models.JSONField(default=dict, verbose_name=_("Parameters"))
+
+    objects = BaseAutomationManager.from_queryset(models.QuerySet)()
 
     def __str__(self):
         return self.name + '@' + str(self.created_by)
@@ -123,7 +129,7 @@ class AutomationExecution(OrgModelMixin):
     )
 
     class Meta:
-        ordering = ('-date_start',)
+        ordering = ('org_id', '-date_start',)
         verbose_name = _('Automation task execution')
 
     @property

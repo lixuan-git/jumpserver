@@ -15,7 +15,8 @@ from users.models import User
 from ..models import ConnectionToken
 
 __all__ = [
-    'ConnectionTokenSecretSerializer', 'ConnectTokenAppletOptionSerializer'
+    'ConnectionTokenSecretSerializer', 'ConnectTokenAppletOptionSerializer',
+    'ConnectTokenVirtualAppOptionSerializer',
 ]
 
 
@@ -58,6 +59,8 @@ class _ConnectionTokenAccountSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def get_su_from(account):
+        if not hasattr(account, 'asset'):
+            return {}
         su_enabled = account.asset.platform.su_enabled
         su_from = account.su_from
         if not su_from or not su_enabled:
@@ -145,9 +148,10 @@ class ConnectionTokenSecretSerializer(OrgResourceModelSerializerMixin):
             'platform', 'command_filter_acls', 'protocol',
             'domain', 'gateway', 'actions', 'expire_at',
             'from_ticket', 'expire_now', 'connect_method',
-            'connect_options',
+            'connect_options', 'face_monitor_token'
         ]
         extra_kwargs = {
+            'face_monitor_token': {'read_only': True},
             'value': {'read_only': True},
         }
 
@@ -158,4 +162,12 @@ class ConnectTokenAppletOptionSerializer(serializers.Serializer):
     host = _ConnectionTokenAssetSerializer(read_only=True)
     account = _ConnectionTokenAccountSerializer(read_only=True)
     gateway = _ConnectionTokenGatewaySerializer(read_only=True)
+    platform = _ConnectionTokenPlatformSerializer(read_only=True)
     remote_app_option = serializers.JSONField(read_only=True)
+
+
+class ConnectTokenVirtualAppOptionSerializer(serializers.Serializer):
+    name = serializers.CharField(label=_('Name'))
+    image_name = serializers.CharField(label=_('Image name'))
+    image_port = serializers.IntegerField(label=_('Image port'))
+    image_protocol = serializers.CharField(label=_('Image protocol'))

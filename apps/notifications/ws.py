@@ -1,18 +1,22 @@
-import threading
 import json
+
 from channels.generic.websocket import JsonWebsocketConsumer
 
-from common.utils import get_logger
 from common.db.utils import safe_db_connection
-from .site_msg import SiteMessageUtil
+from common.utils import get_logger
 from .signal_handlers import new_site_msg_chan
+from .site_msg import SiteMessageUtil
 
 logger = get_logger(__name__)
 
 
 class SiteMsgWebsocket(JsonWebsocketConsumer):
-    refresh_every_seconds = 10
     sub = None
+    refresh_every_seconds = 10
+
+    @property
+    def session(self):
+        return self.scope['session']
 
     def connect(self):
         user = self.scope["user"]
@@ -58,6 +62,6 @@ class SiteMsgWebsocket(JsonWebsocketConsumer):
         return new_site_msg_chan.subscribe(handle_new_site_msg_recv)
 
     def disconnect(self, code):
-        if self.sub:
-            self.sub.unsubscribe()
-
+        if not self.sub:
+            return
+        self.sub.unsubscribe()
